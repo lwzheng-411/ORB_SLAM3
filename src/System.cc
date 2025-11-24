@@ -1383,6 +1383,21 @@ float System::GetImageScale()
     return mpTracker->GetImageScale();
 }
 
+Atlas* System::GetAtlas()
+{
+    return mpAtlas;
+}
+
+const Atlas* System::GetAtlas() const
+{
+    return mpAtlas;
+}
+
+const Settings* System::GetSettings() const
+{
+    return settings_;
+}
+
 #ifdef REGISTER_TIMES
 void System::InsertRectTime(double& time)
 {

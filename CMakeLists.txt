@@ -227,6 +227,10 @@ add_executable(mono_inertial_euroc
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc ${PROJECT_NAME})
 
+add_executable(mono_inertial_hw_export
+        Examples/Monocular-Inertial/mono_inertial_hw_export.cc)
+target_link_libraries(mono_inertial_hw_export ${PROJECT_NAME})
+
 add_executable(mono_inertial_tum_vi
         Examples/Monocular-Inertial/mono_inertial_tum_vi.cc)
 target_link_libraries(mono_inertial_tum_vi ${PROJECT_NAME})

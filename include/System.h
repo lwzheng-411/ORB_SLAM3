@@ -186,6 +186,10 @@ public:
 
     float GetImageScale();
 
+    Atlas* GetAtlas();
+    const Atlas* GetAtlas() const;
+    const Settings* GetSettings() const;
+
 #ifdef REGISTER_TIMES
     void InsertRectTime(double& time);
     void InsertResizeTime(double& time);
