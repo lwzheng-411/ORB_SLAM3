@@ -1,0 +1,2 @@
+# Keep this directory in Git while ignoring all other files
+# This file ensures the dataset/ directory structure is preserved in the repository

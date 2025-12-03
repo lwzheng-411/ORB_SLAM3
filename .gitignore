@@ -7,6 +7,10 @@
 # Unignore all dirs
 !*/
 
+# Datasets: keep empty dir (tracked via .gitkeep) but ignore contents
+dataset/*
+!dataset/.gitkeep
+
 CMakeLists.txt.user
 CMakeLists_modified.txt
 

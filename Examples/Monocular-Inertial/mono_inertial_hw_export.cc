@@ -214,7 +214,7 @@ LoadedImuData LoadImuData(const string& csv_path) {
     return data;
 }
 
-Map* SelectBestMap(ORB_SLAM3::Atlas* atlas) {
+ORB_SLAM3::Map* SelectBestMap(ORB_SLAM3::Atlas* atlas) {
     if (!atlas) {
         return nullptr;
     }
@@ -282,10 +282,11 @@ vector<CameraObservationRecord> BuildObservations(const vector<PoseInfo>& poses)
             if (idx >= keypoints.size()) {
                 continue;
             }
-            const auto [it, inserted] = landmark_ids.emplace(mp, next_landmark_id);
-            if (inserted) {
+            const auto result = landmark_ids.emplace(mp, next_landmark_id);
+            if (result.second) {
                 ++next_landmark_id;
             }
+            const auto& it = result.first;
 
             CameraObservationRecord rec;
             rec.pose_id = pose.pose_id;
