@@ -29,6 +29,8 @@
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
 
+#include <algorithm>
+#include <iomanip>
 #include <iostream>
 
 #include <mutex>
@@ -186,12 +188,15 @@ void Tracking::LocalMapStats2File()
     ofstream f;
     f.open("LocalMapTimeStats.txt");
     f << fixed << setprecision(6);
-    f << "#Stereo rect[ms], MP culling[ms], MP creation[ms], LBA[ms], KF culling[ms], Total[ms]" << endl;
-    for(int i=0; i<mpLocalMapper->vdLMTotal_ms.size(); ++i)
+    f << "#KF Insert[ms], MP culling[ms], MP creation[ms], LBA[ms], KF culling[ms], Total[ms]" << endl;
+    size_t n = std::min({mpLocalMapper->vdLMTotal_ms.size(), 
+                         mpLocalMapper->vdLBA_ms.size(),
+                         mpLocalMapper->vdKFCulling_ms.size()});
+    for(size_t i=0; i<n; ++i)
     {
         f << mpLocalMapper->vdKFInsert_ms[i] << "," << mpLocalMapper->vdMPCulling_ms[i] << ","
-          << mpLocalMapper->vdMPCreation_ms[i] << "," << mpLocalMapper->vdLBASync_ms[i] << ","
-          << mpLocalMapper->vdKFCullingSync_ms[i] <<  "," << mpLocalMapper->vdLMTotal_ms[i] << endl;
+          << mpLocalMapper->vdMPCreation_ms[i] << "," << mpLocalMapper->vdLBA_ms[i] << ","
+          << mpLocalMapper->vdKFCulling_ms[i] <<  "," << mpLocalMapper->vdLMTotal_ms[i] << endl;
     }
 
     f.close();
@@ -199,14 +204,89 @@ void Tracking::LocalMapStats2File()
     f.open("LBA_Stats.txt");
     f << fixed << setprecision(6);
     f << "#LBA time[ms], KF opt[#], KF fixed[#], MP[#], Edges[#]" << endl;
-    for(int i=0; i<mpLocalMapper->vdLBASync_ms.size(); ++i)
+    for(int i=0; i<mpLocalMapper->vdLBA_ms.size(); ++i)
     {
-        f << mpLocalMapper->vdLBASync_ms[i] << "," << mpLocalMapper->vnLBA_KFopt[i] << ","
+        f << mpLocalMapper->vdLBA_ms[i] << "," << mpLocalMapper->vnLBA_KFopt[i] << ","
           << mpLocalMapper->vnLBA_KFfixed[i] << "," << mpLocalMapper->vnLBA_MPs[i] << ","
           << mpLocalMapper->vnLBA_edges[i] << endl;
     }
 
 
+    f.close();
+}
+
+void Tracking::LoopMergeStats2File()
+{
+    // Loop closure timings
+    {
+        ofstream f;
+        f.open("LoopTimeStats.txt");
+        f << fixed << setprecision(6);
+        f << "#LoopFusion_ms,LoopOptEss_ms,LoopTotal_ms" << endl;
+        size_t n = std::min({mpLoopClosing->vdLoopFusion_ms.size(),
+                             mpLoopClosing->vdLoopOptEss_ms.size(),
+                             mpLoopClosing->vdLoopTotal_ms.size()});
+        for(size_t i=0; i<n; ++i)
+        {
+            f << mpLoopClosing->vdLoopFusion_ms[i] << ","
+              << mpLoopClosing->vdLoopOptEss_ms[i] << ","
+              << mpLoopClosing->vdLoopTotal_ms[i] << endl;
+        }
+        f.close();
+    }
+
+    // Map merge timings
+    {
+        ofstream f;
+        f.open("MergeTimeStats.txt");
+        f << fixed << setprecision(6);
+        f << "#MergeMaps_ms,WeldingBA_ms,MergeOptEss_ms,MergeTotal_ms" << endl;
+        size_t n = std::min({mpLoopClosing->vdMergeMaps_ms.size(),
+                             mpLoopClosing->vdWeldingBA_ms.size(),
+                             mpLoopClosing->vdMergeOptEss_ms.size(),
+                             mpLoopClosing->vdMergeTotal_ms.size()});
+        for(size_t i=0; i<n; ++i)
+        {
+            f << mpLoopClosing->vdMergeMaps_ms[i] << ","
+              << mpLoopClosing->vdWeldingBA_ms[i] << ","
+              << mpLoopClosing->vdMergeOptEss_ms[i] << ","
+              << mpLoopClosing->vdMergeTotal_ms[i] << endl;
+        }
+        f.close();
+    }
+
+    // Global/Full BA timings
+    {
+        ofstream f;
+        f.open("GBATimeStats.txt");
+        f << fixed << setprecision(6);
+        f << "#GBA_ms,UpdateMap_ms,FGBATotal_ms" << endl;
+        size_t n = std::min({mpLoopClosing->vdGBA_ms.size(),
+                             mpLoopClosing->vdUpdateMap_ms.size(),
+                             mpLoopClosing->vdFGBATotal_ms.size()});
+        for(size_t i=0; i<n; ++i)
+        {
+            f << mpLoopClosing->vdGBA_ms[i] << ","
+              << mpLoopClosing->vdUpdateMap_ms[i] << ","
+              << mpLoopClosing->vdFGBATotal_ms[i] << endl;
+        }
+        f.close();
+    }
+}
+
+void Tracking::IMUOptStats2File()
+{
+    ofstream f;
+    f.open("IMUOptTimeStats.txt");
+    f << fixed << setprecision(6);
+    f << "#IMUInit_ms,ScaleRef_ms" << endl;
+    size_t n = std::max(mpLocalMapper->vdIMUInit_ms.size(), mpLocalMapper->vdScaleRef_ms.size());
+    for(size_t i=0; i<n; ++i)
+    {
+        double imu_init = (i < mpLocalMapper->vdIMUInit_ms.size()) ? mpLocalMapper->vdIMUInit_ms[i] : 0.0;
+        double scale_ref = (i < mpLocalMapper->vdScaleRef_ms.size()) ? mpLocalMapper->vdScaleRef_ms[i] : 0.0;
+        f << imu_init << "," << scale_ref << endl;
+    }
     f.close();
 }
 
@@ -265,6 +345,8 @@ void Tracking::PrintTimeStats()
     // Save data in files
     TrackStats2File();
     LocalMapStats2File();
+    LoopMergeStats2File();
+    IMUOptStats2File();
 
 
     ofstream f;
@@ -371,6 +453,22 @@ void Tracking::PrintTimeStats()
     deviation = calcDeviation(mpLocalMapper->vdLMTotal_ms, average);
     std::cout << "Total Local Mapping: " << average << "$\\pm$" << deviation << std::endl;
     f << "Total Local Mapping: " << average << "$\\pm$" << deviation << std::endl;
+
+    if(!mpLocalMapper->vdIMUInit_ms.empty())
+    {
+        average = calcAverage(mpLocalMapper->vdIMUInit_ms);
+        deviation = calcDeviation(mpLocalMapper->vdIMUInit_ms, average);
+        std::cout << "IMU Initialization: " << average << "$\\pm$" << deviation << std::endl;
+        f << "IMU Initialization: " << average << "$\\pm$" << deviation << std::endl;
+    }
+
+    if(!mpLocalMapper->vdScaleRef_ms.empty())
+    {
+        average = calcAverage(mpLocalMapper->vdScaleRef_ms);
+        deviation = calcDeviation(mpLocalMapper->vdScaleRef_ms, average);
+        std::cout << "IMU Scale Refinement: " << average << "$\\pm$" << deviation << std::endl;
+        f << "IMU Scale Refinement: " << average << "$\\pm$" << deviation << std::endl;
+    }
 
     // Local Mapping LBA complexity
     std::cout << "---------------------------" << std::endl;
@@ -1793,6 +1891,10 @@ void Tracking::ResetFrameIMU()
 
 void Tracking::Track()
 {
+
+    mnFrameLogCounter++;
+    std::cout << "FRAME_IDX " << mnFrameLogCounter << " TS " << std::fixed << std::setprecision(6)
+              << mCurrentFrame.mTimeStamp << std::endl;
 
     if (bStepByStep)
     {

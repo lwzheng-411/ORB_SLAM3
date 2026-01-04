@@ -116,6 +116,8 @@ public:
     vector<double> vdMPCulling_ms;
     vector<double> vdMPCreation_ms;
     vector<double> vdLBA_ms;
+    vector<double> vdIMUInit_ms;
+    vector<double> vdScaleRef_ms;
     vector<double> vdKFCulling_ms;
     vector<double> vdLMTotal_ms;
 

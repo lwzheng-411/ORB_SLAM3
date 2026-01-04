@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -593,6 +594,17 @@ int main(int argc, char** argv) {
     string times_file = argv[4];
     string output_dir = argv[5];
 
+    // 确保硬件/JSON 开关有默认值：强制 dump JSON、默认关闭硬件，输出目录沿用命令行
+    if (!std::getenv("JSON_OUT_DIR") && !output_dir.empty()) {
+        setenv("JSON_OUT_DIR", output_dir.c_str(), 1);
+    }
+    if (!std::getenv("DUMP_JSON")) {
+        setenv("DUMP_JSON", "1", 1);
+    }
+    if (!std::getenv("USE_HW_SOLVER")) {
+        setenv("USE_HW_SOLVER", "0", 1);
+    }
+
     try {
         ImageSequence sequence;
         LoadImages(sequence_path + "/mav0/cam0/data", times_file, sequence);
@@ -644,6 +656,10 @@ int main(int argc, char** argv) {
                         imu_times[first_imu]);
                     first_imu++;
                 }
+            }
+
+            if (ni % 100 == 0) {
+                cout << "PROGRESS_BAR: " << ni << " / " << sequence.image_paths.size() << endl;
             }
 
             SLAM.TrackMonocular(im, tframe, vImuMeas);

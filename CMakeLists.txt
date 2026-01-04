@@ -14,10 +14,17 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native")
 
 # Check C++14 support (required for sigslot and other dependencies)
 include(CheckCXXCompilerFlag)
+CHECK_CXX_COMPILER_FLAG("-std=c++17" COMPILER_SUPPORTS_CXX17)
 CHECK_CXX_COMPILER_FLAG("-std=c++14" COMPILER_SUPPORTS_CXX14)
 CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
 CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
-if(COMPILER_SUPPORTS_CXX14)
+
+if(COMPILER_SUPPORTS_CXX17)
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+   add_definitions(-DCOMPILEDWITHC11)
+   add_definitions(-DCOMPILEDWITHC14)
+   message(STATUS "Using flag -std=c++17.")
+elseif(COMPILER_SUPPORTS_CXX14)
    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
    add_definitions(-DCOMPILEDWITHC14)
    message(STATUS "Using flag -std=c++14.")
@@ -52,6 +59,9 @@ ${PROJECT_SOURCE_DIR}
 ${PROJECT_SOURCE_DIR}/include
 ${PROJECT_SOURCE_DIR}/include/CameraModels
 ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
+${PROJECT_SOURCE_DIR}/../QR/SW
+${PROJECT_SOURCE_DIR}/../QR/SW/config
+${PROJECT_SOURCE_DIR}/../QR/SW/io
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
 )
@@ -85,6 +95,7 @@ src/OptimizableTypes.cpp
 src/MLPnPsolver.cpp
 src/GeometricTools.cc
 src/TwoViewReconstruction.cc
+src/HardwareAdapter.cc
 src/Config.cc
 src/Settings.cc
 include/System.h
@@ -116,7 +127,13 @@ include/GeometricTools.h
 include/TwoViewReconstruction.h
 include/SerializationUtils.h
 include/Config.h
-include/Settings.h)
+include/Settings.h
+${PROJECT_SOURCE_DIR}/../QR/SW/ORBSLAM3_Exporter.cpp
+${PROJECT_SOURCE_DIR}/../QR/SW/VariableEliminationDriver.cpp
+${PROJECT_SOURCE_DIR}/../QR/SW/Imu.cpp
+${PROJECT_SOURCE_DIR}/../QR/SW/config/SolverSwitch.cpp
+${PROJECT_SOURCE_DIR}/../QR/SW/io/JsonDumper.cpp
+${PROJECT_SOURCE_DIR}/../QR/SW/json_loader.cpp)
 
 add_subdirectory(Thirdparty/g2o)
 
@@ -128,6 +145,7 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lboost_serialization
 -lcrypto
+-lgtsam -ltbb
 )
 
 # If RealSense SDK is found the library is added and its examples compiled

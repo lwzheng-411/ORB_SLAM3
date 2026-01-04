@@ -1267,6 +1267,10 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     Optimizer::InertialOptimization(mpAtlas->GetCurrentMap(), mRwg, mScale, mbg, mba, mbMonocular, infoInertial, false, false, priorG, priorA);
 
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+#ifdef REGISTER_TIMES
+    double timeIMUInit = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t1 - t0).count();
+    vdIMUInit_ms.push_back(timeIMUInit);
+#endif
 
     if (mScale<1e-1)
     {
@@ -1460,6 +1464,10 @@ void LocalMapping::ScaleRefinement()
     std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
     Optimizer::InertialOptimization(mpAtlas->GetCurrentMap(), mRwg, mScale);
     std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+#ifdef REGISTER_TIMES
+    double timeScaleRef = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t1 - t0).count();
+    vdScaleRef_ms.push_back(timeScaleRef);
+#endif
 
     if (mScale<1e-1) // 1e-1
     {

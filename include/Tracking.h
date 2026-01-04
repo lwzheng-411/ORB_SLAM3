@@ -158,6 +158,8 @@ public:
     int mTrackedFr;
     bool mbStep;
 
+    uint64_t mnFrameLogCounter = 0;
+
     // True if local mapping is deactivated and we are performing only localization
     bool mbOnlyTracking;
 
@@ -178,6 +180,8 @@ public:
 
 #ifdef REGISTER_TIMES
     void LocalMapStats2File();
+    void LoopMergeStats2File();
+    void IMUOptStats2File();
     void TrackStats2File();
     void PrintTimeStats();
 

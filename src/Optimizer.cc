@@ -21,6 +21,7 @@
 
 
 #include <complex>
+#include <filesystem>
 
 #include <Eigen/StdVector>
 #include <Eigen/Dense>
@@ -36,8 +37,12 @@
 #include "Thirdparty/g2o/g2o/solvers/linear_solver_dense.h"
 #include "G2oTypes.h"
 #include "Converter.h"
+#include "HardwareAdapter.h"
+#include "config/SolverSwitch.h"
 
 #include<mutex>
+#include<fstream>
+#include<iomanip>
 
 #include "OptimizableTypes.h"
 
@@ -64,6 +69,38 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
     vbNotIncludedMP.resize(vpMP.size());
 
     Map* pMap = vpKFs[0]->GetMap();
+
+    // ==== ASIC/JSON 全局 BA 通路（可选） ====
+    SolverSwitch solver_sw = SolverSwitch::FromEnv();
+    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+        HardwareAdapter::LocalBAInput hw_input;
+        hw_input.local_kfs.assign(vpKFs.begin(), vpKFs.end());
+        hw_input.fixed_kfs.clear();
+        hw_input.local_mps.assign(vpMP.begin(), vpMP.end());
+        hw_input.current_kf = vpKFs.front();
+        hw_input.map = pMap;
+        hw_input.inertial = pMap->IsInertial();
+
+        std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
+        std::string dump_dir = base_dir;
+        if (solver_sw.dump_json) {
+            dump_dir = base_dir + "/lba_kf_" + std::to_string(vpKFs[0]->mnId);
+        }
+        HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, solver_sw, dump_dir);
+        if (hw_res.success) {
+            for (const auto& kv : hw_res.pose_updates) {
+                KeyFrame* kf = kv.first;
+                const Sophus::SE3f& T = kv.second;
+                kf->SetPose(T);
+            }
+            for (const auto& kv : hw_res.landmark_updates) {
+                MapPoint* mp = kv.first;
+                if (mp && !mp->isBad()) mp->SetWorldPos(kv.second);
+            }
+            return; // 硬件成功则跳过原生 BA
+        }
+        // 失败则继续原生 BA
+    }
 
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
@@ -718,11 +755,6 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
         }
     }
 
-    if(pbStopFlag)
-        if(*pbStopFlag)
-            return;
-
-
     optimizer.initializeOptimization();
     optimizer.optimize(its);
 
@@ -1185,6 +1217,36 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         return;
     }
 
+    // ==== ASIC/JSON 硬件通路（可选） ====
+    SolverSwitch solver_sw = SolverSwitch::FromEnv();
+    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+        HardwareAdapter::LocalBAInput hw_input;
+        hw_input.local_kfs = lLocalKeyFrames;
+        hw_input.fixed_kfs = lFixedCameras;
+        hw_input.local_mps = lLocalMapPoints;
+        hw_input.current_kf = pKF;
+        hw_input.map = pMap;
+        hw_input.inertial = pMap->IsInertial();
+
+        std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
+        std::string dump_dir = base_dir;
+        if (solver_sw.dump_json) {
+            // 使用 lba_kf_<id> 目录与文档一致，便于定位每次 Local BA 导出的 JSON
+            dump_dir = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+        }
+        HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, solver_sw, dump_dir);
+        if (hw_res.success) {
+            for (const auto& kv : hw_res.pose_updates) {
+                KeyFrame* kf = kv.first;
+                const Sophus::SE3f& T = kv.second;
+                kf->SetPose(T);
+            }
+            // TODO: 可在此处根据 hw_res.landmark_updates 更新 MapPoint
+            return; // 硬件求解成功则跳过原生 BA
+        }
+        // 若硬件未成功，则继续执行原生 BA
+    }
+
     // Setup optimizer
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolver_6_3::LinearSolverType * linearSolver;
@@ -1404,8 +1466,24 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     num_edges = nEdges;
 
     if(pbStopFlag)
-        if(*pbStopFlag)
+        if(*pbStopFlag) {
+            // Baseline dump even when BA is aborted by stop flag (for coverage)
+            SolverSwitch solver_sw_abort = SolverSwitch::FromEnv();
+            if (solver_sw_abort.dump_json || solver_sw_abort.dump_baseline) {
+                std::string base_dir = solver_sw_abort.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw_abort.json_out_dir;
+                std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+                std::filesystem::create_directories(dir_path);
+                std::string baseline_path = dir_path + "/baseline_g2o.txt";
+                std::ofstream baseline_out(baseline_path);
+                if (baseline_out.is_open()) {
+                    baseline_out << "# ABORTED LocalBundleAdjustment by stop flag\n";
+                    baseline_out << "# KeyFrame: " << pKF->mnId << "\n";
+                    baseline_out.close();
+                    std::cout << "[LBA Baseline] Aborted (stop flag) saved to: " << baseline_path << std::endl;
+                }
+            }
             return;
+        }
 
     optimizer.initializeOptimization();
     optimizer.optimize(10);
@@ -1494,6 +1572,60 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         pMP->UpdateNormalAndDepth();
     }
 
+    // ==== Baseline output for ASIC verification ====
+    SolverSwitch solver_sw_baseline = SolverSwitch::FromEnv();
+    if (solver_sw_baseline.dump_json || solver_sw_baseline.dump_baseline) {
+        std::string base_dir = solver_sw_baseline.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw_baseline.json_out_dir;
+        std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+        std::filesystem::create_directories(dir_path);
+        std::string baseline_path = dir_path + "/baseline_g2o.txt";
+        
+        std::ofstream baseline_out(baseline_path);
+        if (baseline_out.is_open()) {
+            baseline_out << std::fixed << std::setprecision(10);
+            baseline_out << "# g2o LBA Baseline for ASIC verification\n";
+            baseline_out << "# KeyFrame: " << pKF->mnId << "\n";
+            baseline_out << "# Local KFs: " << lLocalKeyFrames.size() << "\n";
+            baseline_out << "# Local MPs: " << lLocalMapPoints.size() << "\n\n";
+            
+            // Output optimized poses (Tcw: camera-to-world transform)
+            baseline_out << "# === OPTIMIZED POSES (Tcw) ===\n";
+            for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
+            {
+                KeyFrame* pKFi = *lit;
+                Sophus::SE3f Tcw = pKFi->GetPose();
+                Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation();
+                
+                baseline_out << "POSE " << pKFi->mnId << "\n";
+                baseline_out << "R:\n";
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        baseline_out << Rcw(r, c);
+                        if (c < 2) baseline_out << " ";
+                    }
+                    baseline_out << "\n";
+                }
+                baseline_out << "t: " << tcw(0) << " " << tcw(1) << " " << tcw(2) << "\n\n";
+            }
+            
+            // Output optimized landmarks
+            baseline_out << "# === OPTIMIZED LANDMARKS ===\n";
+            for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+            {
+                MapPoint* pMP = *lit;
+                Eigen::Vector3f pos = pMP->GetWorldPos();
+                baseline_out << "LANDMARK " << pMP->mnId << " " << pos(0) << " " << pos(1) << " " << pos(2) << "\n";
+            }
+            
+            baseline_out.close();
+            std::cout << "[LBA Baseline] Saved to: " << baseline_path << std::endl;
+            
+            // 同时刷新 pending JSON（确保 JSON 和 baseline 配对）
+            FlushPendingJson();
+        }
+    }
+
     pMap->IncreaseChangeIndex();
 }
 
@@ -1503,6 +1635,63 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
                                        const LoopClosing::KeyFrameAndPose &CorrectedSim3,
                                        const map<KeyFrame *, set<KeyFrame *> > &LoopConnections, const bool &bFixScale)
 {   
+    // ==== ASIC/JSON Pose-only 图优化（Sim3→SE3 近似） ====
+    SolverSwitch solver_sw = SolverSwitch::FromEnv();
+    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+        HardwareAdapter::LocalBAInput hw_input;
+        hw_input.map = pMap;
+        hw_input.inertial = pMap->IsInertial();
+        hw_input.pose_only = true;
+        hw_input.fix_scale = bFixScale;
+
+        const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
+        for (KeyFrame* kf : vpKFs) {
+            if (!kf || kf->isBad()) continue;
+            hw_input.local_kfs.push_back(kf);
+        }
+
+        // 构造边：Sim3 → SE3 (t/s) 近似
+        for (const auto& mit : LoopConnections) {
+            KeyFrame* kfi = mit.first;
+            if (!kfi || kfi->isBad()) continue;
+            const g2o::Sim3 Siw = (CorrectedSim3.count(kfi) ? CorrectedSim3.at(kfi) : g2o::Sim3(kfi->GetPose().cast<double>().unit_quaternion(), kfi->GetPose().cast<double>().translation(), 1.0));
+            const g2o::Sim3 Swi = Siw.inverse();
+            for (KeyFrame* kfj : mit.second) {
+                if (!kfj || kfj->isBad()) continue;
+                const g2o::Sim3 Sjw = (CorrectedSim3.count(kfj) ? CorrectedSim3.at(kfj) : g2o::Sim3(kfj->GetPose().cast<double>().unit_quaternion(), kfj->GetPose().cast<double>().translation(), 1.0));
+                g2o::Sim3 Sji = Sjw * Swi;
+                double s = (bFixScale ? 1.0 : Sji.scale());
+                g2o::Sim3 Sji_se3(Sji.rotation(), Sji.translation()/s, 1.0);
+                Sophus::SE3f Tji(Sji_se3.rotation().cast<float>(), (Sji_se3.translation()).cast<float>());
+
+                HardwareAdapter::LocalBAInput::PoseEdge e;
+                e.i = kfi->mnId;
+                e.j = kfj->mnId;
+                e.R = Tji.rotationMatrix();
+                e.t = Tji.translation();
+                e.sigma << 0.1f,0.1f,0.1f,0.05f,0.05f,0.05f; // 经验噪声，可调
+                hw_input.pose_edges.push_back(e);
+            }
+        }
+
+        // 调用硬件/JSON 通路（成功则跳过原生；当前硬件未接入时 success=false 回退原生）
+        std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
+        std::string dump_dir = base_dir;
+        if (solver_sw.dump_json) {
+            dump_dir = base_dir + "/essgraph_loop_" + std::to_string(pLoopKF ? pLoopKF->mnId : 0) +
+                       "_cur_" + std::to_string(pCurKF ? pCurKF->mnId : 0);
+        }
+        HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, solver_sw, dump_dir);
+        if (hw_res.success) {
+            for (const auto& kv : hw_res.pose_updates) {
+                KeyFrame* kf = kv.first;
+                const Sophus::SE3f& T = kv.second;
+                kf->SetPose(T);
+            }
+            return;
+        }
+        // 失败回退原生
+    }
     // Setup optimizer
     g2o::SparseOptimizer optimizer;
     optimizer.setVerbose(false);
@@ -2503,6 +2692,38 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
     bool bNonFixed = (lFixedKeyFrames.size() == 0);
 
+    // ==== ASIC/JSON 硬件通路 (LocalInertialBA) ====
+    SolverSwitch solver_sw = SolverSwitch::FromEnv();
+    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+        HardwareAdapter::LocalBAInput hw_input;
+        // 合并 temporal 和 visual KFs 到 local_kfs
+        for(KeyFrame* kf : vpOptimizableKFs) hw_input.local_kfs.push_back(kf);
+        for(KeyFrame* kf : lpOptVisKFs) hw_input.local_kfs.push_back(kf);
+        
+        hw_input.fixed_kfs.assign(lFixedKeyFrames.begin(), lFixedKeyFrames.end());
+        hw_input.local_mps.assign(lLocalMapPoints.begin(), lLocalMapPoints.end());
+        hw_input.current_kf = pKF;
+        hw_input.map = pCurrentMap;
+        hw_input.inertial = true; 
+
+        std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
+        std::string dump_dir = base_dir;
+        if (solver_sw.dump_json) {
+            dump_dir = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+        }
+        
+        HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, solver_sw, dump_dir);
+        
+        if (hw_res.success) {
+             for (const auto& kv : hw_res.pose_updates) {
+                KeyFrame* kf = kv.first;
+                const Sophus::SE3f& T = kv.second;
+                kf->SetPose(T);
+            }
+            return;
+        }
+    }
+
     // Setup optimizer
     g2o::SparseOptimizer optimizer;
     g2o::BlockSolverX::LinearSolverType * linearSolver;
@@ -2837,6 +3058,24 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         assert(mit->second>=3);
     }
 
+    // === Save BEFORE optimization state for baseline comparison ===
+    std::map<int, std::pair<Eigen::Matrix3f, Eigen::Vector3f>> pose_before;
+    std::map<int, Eigen::Vector3f> landmark_before;
+    for(int i=0; i<N; i++) {
+        KeyFrame* pKFi = vpOptimizableKFs[i];
+        Sophus::SE3f Tcw = pKFi->GetPose();
+        pose_before[pKFi->mnId] = {Tcw.rotationMatrix(), Tcw.translation()};
+    }
+    for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd = lpOptVisKFs.end(); it!=itEnd; it++) {
+        KeyFrame* pKFi = *it;
+        Sophus::SE3f Tcw = pKFi->GetPose();
+        pose_before[pKFi->mnId] = {Tcw.rotationMatrix(), Tcw.translation()};
+    }
+    for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++) {
+        MapPoint* pMP = *lit;
+        landmark_before[pMP->mnId] = pMP->GetWorldPos();
+    }
+
     optimizer.initializeOptimization();
     optimizer.computeActiveErrors();
     float err = optimizer.activeRobustChi2();
@@ -2891,6 +3130,21 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     if((2*err < err_end || isnan(err) || isnan(err_end)) && !bLarge) //bGN)
     {
         cout << "FAIL LOCAL-INERTIAL BA!!!!" << endl;
+        // Still output baseline for debugging even on failure
+        SolverSwitch sw_fail = SolverSwitch::FromEnv();
+        if (sw_fail.dump_json || sw_fail.dump_baseline) {
+            std::string base_dir = sw_fail.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : sw_fail.json_out_dir;
+            std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+            std::filesystem::create_directories(dir_path);
+            std::string baseline_path = dir_path + "/baseline_g2o.txt";
+            std::ofstream fail_out(baseline_path);
+            if (fail_out.is_open()) {
+                fail_out << "# FAILED LocalInertialBA - convergence issue\n";
+                fail_out << "# KeyFrame: " << pKF->mnId << "\n";
+                fail_out << "# Reason: 2*err < err_end or NaN detected\n";
+                fail_out.close();
+            }
+        }
         return;
     }
 
@@ -2952,6 +3206,138 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         g2o::VertexSBAPointXYZ* vPoint = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId+iniMPid+1));
         pMP->SetWorldPos(vPoint->estimate().cast<float>());
         pMP->UpdateNormalAndDepth();
+    }
+
+    // ==== Baseline output for ASIC verification (LocalInertialBA) ====
+    SolverSwitch solver_sw_baseline = SolverSwitch::FromEnv();
+    if (solver_sw_baseline.dump_json || solver_sw_baseline.dump_baseline) {
+        std::string base_dir = solver_sw_baseline.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw_baseline.json_out_dir;
+        std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+        std::filesystem::create_directories(dir_path);
+        std::string baseline_path = dir_path + "/baseline_g2o.txt";
+        
+        std::ofstream baseline_out(baseline_path);
+        if (baseline_out.is_open()) {
+            baseline_out << std::fixed << std::setprecision(10);
+            baseline_out << "# g2o LBA Baseline for ASIC verification (LocalInertialBA)\n";
+            baseline_out << "# KeyFrame: " << pKF->mnId << "\n";
+            baseline_out << "# Temporal KFs: " << vpOptimizableKFs.size() << "\n";
+            baseline_out << "# Visual KFs: " << lpOptVisKFs.size() << "\n";
+            baseline_out << "# Local MPs: " << lLocalMapPoints.size() << "\n\n";
+            
+            // ============ INPUT (BEFORE optimization) ============
+            baseline_out << "# ============ INPUT (BEFORE optimization) ============\n\n";
+            
+            baseline_out << "# === INPUT POSES (Temporal KFs) ===\n";
+            for(int i=0; i<N; i++)
+            {
+                KeyFrame* pKFi = vpOptimizableKFs[i];
+                auto it = pose_before.find(pKFi->mnId);
+                if (it != pose_before.end()) {
+                    Eigen::Matrix3f Rcw = it->second.first;
+                    Eigen::Vector3f tcw = it->second.second;
+                    baseline_out << "POSE_IN " << pKFi->mnId << "\n";
+                    baseline_out << "R:\n";
+                    for (int r = 0; r < 3; ++r) {
+                        for (int c = 0; c < 3; ++c) {
+                            baseline_out << Rcw(r, c);
+                            if (c < 2) baseline_out << " ";
+                        }
+                        baseline_out << "\n";
+                    }
+                    baseline_out << "t: " << tcw(0) << " " << tcw(1) << " " << tcw(2) << "\n\n";
+                }
+            }
+            
+            baseline_out << "# === INPUT POSES (Visual KFs) ===\n";
+            for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd = lpOptVisKFs.end(); it!=itEnd; it++)
+            {
+                KeyFrame* pKFi = *it;
+                auto pit = pose_before.find(pKFi->mnId);
+                if (pit != pose_before.end()) {
+                    Eigen::Matrix3f Rcw = pit->second.first;
+                    Eigen::Vector3f tcw = pit->second.second;
+                    baseline_out << "POSE_IN " << pKFi->mnId << "\n";
+                    baseline_out << "R:\n";
+                    for (int r = 0; r < 3; ++r) {
+                        for (int c = 0; c < 3; ++c) {
+                            baseline_out << Rcw(r, c);
+                            if (c < 2) baseline_out << " ";
+                        }
+                        baseline_out << "\n";
+                    }
+                    baseline_out << "t: " << tcw(0) << " " << tcw(1) << " " << tcw(2) << "\n\n";
+                }
+            }
+            
+            baseline_out << "# === INPUT LANDMARKS ===\n";
+            for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+            {
+                MapPoint* pMP = *lit;
+                auto mit = landmark_before.find(pMP->mnId);
+                if (mit != landmark_before.end()) {
+                    Eigen::Vector3f pos = mit->second;
+                    baseline_out << "LANDMARK_IN " << pMP->mnId << " " << pos(0) << " " << pos(1) << " " << pos(2) << "\n";
+                }
+            }
+            
+            // ============ OUTPUT (AFTER optimization) ============
+            baseline_out << "\n# ============ OUTPUT (AFTER optimization) ============\n\n";
+            
+            baseline_out << "# === OUTPUT POSES (Temporal KFs) ===\n";
+            for(int i=0; i<N; i++)
+            {
+                KeyFrame* pKFi = vpOptimizableKFs[i];
+                Sophus::SE3f Tcw = pKFi->GetPose();
+                Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation();
+                
+                baseline_out << "POSE_OUT " << pKFi->mnId << "\n";
+                baseline_out << "R:\n";
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        baseline_out << Rcw(r, c);
+                        if (c < 2) baseline_out << " ";
+                    }
+                    baseline_out << "\n";
+                }
+                baseline_out << "t: " << tcw(0) << " " << tcw(1) << " " << tcw(2) << "\n\n";
+            }
+            
+            baseline_out << "# === OUTPUT POSES (Visual KFs) ===\n";
+            for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd = lpOptVisKFs.end(); it!=itEnd; it++)
+            {
+                KeyFrame* pKFi = *it;
+                Sophus::SE3f Tcw = pKFi->GetPose();
+                Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation();
+                
+                baseline_out << "POSE_OUT " << pKFi->mnId << "\n";
+                baseline_out << "R:\n";
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c) {
+                        baseline_out << Rcw(r, c);
+                        if (c < 2) baseline_out << " ";
+                    }
+                    baseline_out << "\n";
+                }
+                baseline_out << "t: " << tcw(0) << " " << tcw(1) << " " << tcw(2) << "\n\n";
+            }
+            
+            baseline_out << "# === OUTPUT LANDMARKS ===\n";
+            for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+            {
+                MapPoint* pMP = *lit;
+                Eigen::Vector3f pos = pMP->GetWorldPos();
+                baseline_out << "LANDMARK_OUT " << pMP->mnId << " " << pos(0) << " " << pos(1) << " " << pos(2) << "\n";
+            }
+            
+            baseline_out.close();
+            std::cout << "[LBA Baseline] Saved to: " << baseline_path << std::endl;
+            
+            // 同时刷新 pending JSON（确保 JSON 和 baseline 配对）
+            FlushPendingJson();
+        }
     }
 
     pMap->IncreaseChangeIndex();

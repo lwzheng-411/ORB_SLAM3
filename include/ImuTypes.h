@@ -221,13 +221,7 @@ public:
     Eigen::Vector3f avgA, avgW;
 
 
-private:
-    // Updated bias
-    Bias bu;
-    // Dif between original and updated bias
-    // This is used to compute the updated values of the preintegration
-    Eigen::Matrix<float,6,1> db;
-
+public:
     struct integrable
     {
         template<class Archive>
@@ -244,6 +238,17 @@ private:
         Eigen::Vector3f a, w;
         float t;
     };
+
+    const std::vector<integrable>& GetMeasurements() const {
+        return mvMeasurements;
+    }
+
+private:
+    // Updated bias
+    Bias bu;
+    // Dif between original and updated bias
+    // This is used to compute the updated values of the preintegration
+    Eigen::Matrix<float,6,1> db;
 
     std::vector<integrable> mvMeasurements;
 
