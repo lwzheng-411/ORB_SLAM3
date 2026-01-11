@@ -1154,7 +1154,21 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     pKF->mnBALocalForKF = pKF->mnId;
     Map* pCurrentMap = pKF->GetMap();
 
-    const vector<KeyFrame*> vNeighKFs = pKF->GetVectorCovisibleKeyFrames();
+    // Check for covisibility limit from environment variable
+    // LBA_MAX_COVIS=0 means no limit (default), LBA_MAX_COVIS=10 means max 10 covisible keyframes
+    int max_covis = 0;  // 0 = no limit
+    const char* env_max_covis = std::getenv("LBA_MAX_COVIS");
+    if (env_max_covis) {
+        max_covis = std::atoi(env_max_covis);
+    }
+
+    vector<KeyFrame*> vNeighKFs;
+    if (max_covis > 0) {
+        vNeighKFs = pKF->GetBestCovisibilityKeyFrames(max_covis);
+    } else {
+        vNeighKFs = pKF->GetVectorCovisibleKeyFrames();
+    }
+
     for(int i=0, iend=vNeighKFs.size(); i<iend; i++)
     {
         KeyFrame* pKFi = vNeighKFs[i];
