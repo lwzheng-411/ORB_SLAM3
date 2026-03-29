@@ -80,6 +80,10 @@ struct ImuEdgeRecord {
     double start_time = 0.0;
     double end_time = 0.0;
     vector<ImuMeasurementRecord> measurements;
+    // Sigma from ORB-SLAM3 preintegration covariance C (diagonal sqrt)
+    // Order: [rotation(3), position(3)] - matches ASIC Axb alpha convention
+    // alpha = 1/sigma, info = 1/sigma^2
+    Eigen::Matrix<float,6,1> sigma = Eigen::Matrix<float,6,1>::Constant(-1.0f);
 };
 
 struct PriorRecord {
@@ -380,6 +384,22 @@ vector<ImuEdgeRecord> BuildImuEdges(const vector<PoseInfo>& poses,
         edge.start_time = prev_pose.timestamp;
         edge.end_time = curr_pose.timestamp;
         edge.measurements = std::move(meas);
+
+        // Extract sigma from ORB-SLAM3 preintegration covariance C
+        // C is 15x15: [theta(3), vel(3), pos(3), bg(3), ba(3)]
+        // sigma_r = sqrt(diag(C)[0:2]), sigma_t = sqrt(diag(C)[6:8])
+        // Output order: [rotation(3), position(3)] to match ASIC Axb convention
+        if (curr_pose.keyframe && curr_pose.keyframe->mpImuPreintegrated) {
+            const auto& C = curr_pose.keyframe->mpImuPreintegrated->C;
+            // C top-left 9x9: [theta(0:2), vel(3:5), pos(6:8)]
+            for (int k = 0; k < 3; ++k) {
+                float var_r = C(k, k);
+                float var_t = C(k + 6, k + 6);
+                edge.sigma(k)     = std::sqrt(std::max(var_r, 1e-20f));  // rotation
+                edge.sigma(k + 3) = std::sqrt(std::max(var_t, 1e-20f)); // position
+            }
+        }
+
         edges.push_back(std::move(edge));
     }
     return edges;
@@ -471,6 +491,12 @@ void WriteImuEdges(const string& filepath, const vector<ImuEdgeRecord>& edges) {
         os << "      \"pose_j\": " << edge.pose_j << ",\n";
         os << "      \"start_time\": " << edge.start_time << ",\n";
         os << "      \"end_time\": " << edge.end_time << ",\n";
+        os << "      \"sigma\": [";
+        for (int k = 0; k < 6; ++k) {
+            os << edge.sigma(k);
+            if (k + 1 < 6) os << ", ";
+        }
+        os << "],\n";
         os << "      \"measurements\": [\n";
         for (size_t j = 0; j < edge.measurements.size(); ++j) {
             const auto& meas = edge.measurements[j];
