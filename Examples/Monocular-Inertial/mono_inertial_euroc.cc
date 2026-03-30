@@ -240,6 +240,13 @@ int main(int argc, char *argv[])
     // Stop all threads
     SLAM.Shutdown();
 
+    // Force exit in headless mode to avoid hang in viewer thread cleanup
+    const char* env_no_viewer_exit = std::getenv("SLAM_NO_VIEWER");
+    if (env_no_viewer_exit && (std::string(env_no_viewer_exit) == "1" || std::string(env_no_viewer_exit) == "true")) {
+        std::cout << "[Headless] Force exit after shutdown" << std::endl;
+        _exit(0);
+    }
+
     // Save camera trajectory
     if (bFileName)
     {

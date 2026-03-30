@@ -21,6 +21,7 @@
 #include<fstream>
 #include<iomanip>
 #include<chrono>
+#include<cstdlib>
 
 #include<opencv2/core/core.hpp>
 
@@ -87,8 +88,16 @@ int main(int argc, char **argv)
     cout << endl << "-------" << endl;
     cout.precision(17);
 
+    // Check for viewer disable via environment variable (for headless servers)
+    bool bUseViewer = true;
+    const char* env_no_viewer = std::getenv("SLAM_NO_VIEWER");
+    if (env_no_viewer && (std::string(env_no_viewer) == "1" || std::string(env_no_viewer) == "true")) {
+        bUseViewer = false;
+        cout << "Viewer disabled via SLAM_NO_VIEWER environment variable" << endl;
+    }
+
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::STEREO, true);
+    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::STEREO, bUseViewer);
 
     cv::Mat imLeft, imRight;
     for (seq = 0; seq<num_seq; seq++)

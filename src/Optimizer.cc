@@ -1499,8 +1499,47 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             return;
         }
 
+    // Save initial estimates for delta_x export (FP64 ground truth)
+    std::map<int, g2o::SE3Quat> initial_pose_estimates;
+    std::map<int, Eigen::Vector3d> initial_lm_estimates;
+    SolverSwitch solver_sw_pre = SolverSwitch::FromEnv();
+    bool export_delta = (solver_sw_pre.dump_json || solver_sw_pre.dump_baseline);
+    if (export_delta) {
+        for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
+            KeyFrame* pKFi = *lit;
+            g2o::VertexSE3Expmap* v = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
+            if (v && !v->fixed()) initial_pose_estimates[pKFi->mnId] = v->estimate();
+        }
+        for (auto lit = lLocalMapPoints.begin(); lit != lLocalMapPoints.end(); lit++) {
+            MapPoint* pMP = *lit;
+            g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
+            if (v) initial_lm_estimates[pMP->mnId] = v->estimate();
+        }
+    }
+
     optimizer.initializeOptimization();
-    optimizer.optimize(10);
+
+    // Run 1 iteration first, save delta_x for 1-iter comparison
+    optimizer.optimize(1);
+
+    // Save 1-iter delta_x (FP64 ground truth)
+    std::map<int, g2o::SE3Quat> iter1_pose_estimates;
+    std::map<int, Eigen::Vector3d> iter1_lm_estimates;
+    if (export_delta) {
+        for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
+            KeyFrame* pKFi = *lit;
+            g2o::VertexSE3Expmap* v = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
+            if (v && !v->fixed()) iter1_pose_estimates[pKFi->mnId] = v->estimate();
+        }
+        for (auto lit = lLocalMapPoints.begin(); lit != lLocalMapPoints.end(); lit++) {
+            MapPoint* pMP = *lit;
+            g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
+            if (v) iter1_lm_estimates[pMP->mnId] = v->estimate();
+        }
+    }
+
+    // Continue remaining 9 iterations
+    optimizer.optimize(9);
 
     vector<pair<KeyFrame*,MapPoint*> > vToErase;
     vToErase.reserve(vpEdgesMono.size()+vpEdgesBody.size()+vpEdgesStereo.size());
@@ -1593,7 +1632,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
         std::filesystem::create_directories(dir_path);
         std::string baseline_path = dir_path + "/baseline_g2o.txt";
-        
+
         std::ofstream baseline_out(baseline_path);
         if (baseline_out.is_open()) {
             baseline_out << std::fixed << std::setprecision(10);
@@ -1601,7 +1640,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             baseline_out << "# KeyFrame: " << pKF->mnId << "\n";
             baseline_out << "# Local KFs: " << lLocalKeyFrames.size() << "\n";
             baseline_out << "# Local MPs: " << lLocalMapPoints.size() << "\n\n";
-            
+
             // Output optimized poses (Tcw: camera-to-world transform)
             baseline_out << "# === OPTIMIZED POSES (Tcw) ===\n";
             for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
@@ -1610,7 +1649,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 Sophus::SE3f Tcw = pKFi->GetPose();
                 Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
                 Eigen::Vector3f tcw = Tcw.translation();
-                
+
                 baseline_out << "POSE " << pKFi->mnId << "\n";
                 baseline_out << "R:\n";
                 for (int r = 0; r < 3; ++r) {
@@ -1622,7 +1661,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 }
                 baseline_out << "t: " << tcw(0) << " " << tcw(1) << " " << tcw(2) << "\n\n";
             }
-            
+
             // Output optimized landmarks
             baseline_out << "# === OPTIMIZED LANDMARKS ===\n";
             for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
@@ -1631,13 +1670,81 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 Eigen::Vector3f pos = pMP->GetWorldPos();
                 baseline_out << "LANDMARK " << pMP->mnId << " " << pos(0) << " " << pos(1) << " " << pos(2) << "\n";
             }
-            
+
             baseline_out.close();
             std::cout << "[LBA Baseline] Saved to: " << baseline_path << std::endl;
-            
+
             // 同时刷新 pending JSON（确保 JSON 和 baseline 配对）
             FlushPendingJson();
         }
+
+        // ==== Export delta_x (FP64 ground truth): 1-iter and 10-iter ====
+        auto write_delta_x = [&](const std::string& path, int n_iter,
+                                  const std::map<int, g2o::SE3Quat>& pose_est,
+                                  const std::map<int, Eigen::Vector3d>& lm_est) {
+            std::ofstream out(path);
+            if (!out.is_open()) return;
+            out << std::scientific << std::setprecision(15);
+            out << "# g2o LBA delta_x (FP64 ground truth)\n";
+            out << "# Algorithm: Levenberg-Marquardt, " << n_iter << " iterations\n";
+            out << "# Precision: double (float64)\n";
+            out << "# KeyFrame: " << pKF->mnId << "\n";
+            out << "# Local KFs: " << lLocalKeyFrames.size() << "\n";
+            out << "# Local MPs: " << lLocalMapPoints.size() << "\n\n";
+
+            out << "# === POSE DELTA_X [dt_x, dt_y, dt_z, omega_x, omega_y, omega_z] ===\n";
+            for (auto lit2 = lLocalKeyFrames.begin(); lit2 != lLocalKeyFrames.end(); lit2++) {
+                KeyFrame* pKFi = *lit2;
+                auto it_init = initial_pose_estimates.find(pKFi->mnId);
+                if (it_init == initial_pose_estimates.end()) continue;
+                auto it_opt = pose_est.find(pKFi->mnId);
+                if (it_opt == pose_est.end()) continue;
+                g2o::SE3Quat delta_T = it_init->second.inverse() * it_opt->second;
+                Eigen::Vector3d dt = delta_T.translation();
+                Eigen::Matrix3d dR = delta_T.rotation().toRotationMatrix();
+                Eigen::Vector3d omega;
+                omega << (dR(2,1)-dR(1,2))/2.0, (dR(0,2)-dR(2,0))/2.0, (dR(1,0)-dR(0,1))/2.0;
+                out << "POSE " << pKFi->mnId;
+                for (int k = 0; k < 3; k++) out << " " << dt(k);
+                for (int k = 0; k < 3; k++) out << " " << omega(k);
+                out << "\n";
+            }
+
+            out << "\n# === LANDMARK DELTA_X [dx, dy, dz] ===\n";
+            for (auto lit2 = lLocalMapPoints.begin(); lit2 != lLocalMapPoints.end(); lit2++) {
+                MapPoint* pMP = *lit2;
+                auto it_init = initial_lm_estimates.find(pMP->mnId);
+                if (it_init == initial_lm_estimates.end()) continue;
+                auto it_opt = lm_est.find(pMP->mnId);
+                if (it_opt == lm_est.end()) continue;
+                Eigen::Vector3d delta_lm = it_opt->second - it_init->second;
+                out << "LANDMARK " << pMP->mnId;
+                for (int k = 0; k < 3; k++) out << " " << delta_lm(k);
+                out << "\n";
+            }
+            out.close();
+            std::cout << "[LBA Delta] FP64 " << n_iter << "-iter delta_x saved to: " << path << std::endl;
+        };
+
+        // Save 1-iter delta_x
+        write_delta_x(dir_path + "/delta_x_g2o_fp64_1iter.txt", 1,
+                       iter1_pose_estimates, iter1_lm_estimates);
+
+        // Save 10-iter delta_x (final optimizer state)
+        std::map<int, g2o::SE3Quat> final_pose_estimates;
+        std::map<int, Eigen::Vector3d> final_lm_estimates;
+        for (auto lit2 = lLocalKeyFrames.begin(); lit2 != lLocalKeyFrames.end(); lit2++) {
+            KeyFrame* pKFi = *lit2;
+            g2o::VertexSE3Expmap* v = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
+            if (v && !v->fixed()) final_pose_estimates[pKFi->mnId] = v->estimate();
+        }
+        for (auto lit2 = lLocalMapPoints.begin(); lit2 != lLocalMapPoints.end(); lit2++) {
+            MapPoint* pMP = *lit2;
+            g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
+            if (v) final_lm_estimates[pMP->mnId] = v->estimate();
+        }
+        write_delta_x(dir_path + "/delta_x_g2o_fp64_10iter.txt", 10,
+                       final_pose_estimates, final_lm_estimates);
     }
 
     pMap->IncreaseChangeIndex();
