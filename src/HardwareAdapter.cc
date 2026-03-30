@@ -235,28 +235,20 @@ void HardwareAdapter::FillExporter(const LocalBAInput& input,
             edge.measurements = std::move(seg);
             edge.dt_total = dt_total;
 
-            // NOTE: Do NOT call addImuEdge here — addImuConstraintDirect below
-            // already adds the constraint. Calling both causes duplicate IMU edges.
-
             // Use ORB-SLAM3 preintegration covariance for sigma (ground truth)
             // C(15x15): [theta(3), vel(3), pos(3), bg(3), ba(3)]
             // sigma order: [rotation(3), position(3)]
             const auto& C = pim->C;
-            Eigen::Matrix<float, 6, 1> orbslam3_sigma;
             for (int k = 0; k < 3; ++k) {
                 float var_r = C(k, k);
                 float var_t = C(k + 6, k + 6);
-                orbslam3_sigma(k)     = std::sqrt(std::max(var_r, 1e-20f));
-                orbslam3_sigma(k + 3) = std::sqrt(std::max(var_t, 1e-20f));
+                edge.sigma(k)     = std::sqrt(std::max(var_r, 1e-20f));
+                edge.sigma(k + 3) = std::sqrt(std::max(var_t, 1e-20f));
             }
 
-            ImuConstraint c;
-            c.pose_i_id = edge.pose_i_id;
-            c.pose_j_id = edge.pose_j_id;
-            c.deltaR = out.deltaR;
-            c.deltaT = out.deltaT;
-            c.sigma = orbslam3_sigma;  // Use ORB-SLAM3 sigma, not GTSAM
-            exporter.addImuConstraintDirect(c);
+            // Use addImuEdge (not addImuConstraintDirect) to preserve raw measurements
+            // for per-LBA JSON dump. sigma is passed through edge.sigma.
+            exporter.addImuEdge(edge);
         }
     }
 
