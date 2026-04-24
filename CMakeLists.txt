@@ -68,7 +68,7 @@ ${Pangolin_INCLUDE_DIRS}
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
-add_library(${PROJECT_NAME} SHARED
+set(ORB_SLAM3_SOURCES
 src/System.cc
 src/Tracking.cc
 src/LocalMapping.cc
@@ -133,11 +133,108 @@ ${PROJECT_SOURCE_DIR}/../QR/SW/VariableEliminationDriver.cpp
 ${PROJECT_SOURCE_DIR}/../QR/SW/Imu.cpp
 ${PROJECT_SOURCE_DIR}/../QR/SW/config/SolverSwitch.cpp
 ${PROJECT_SOURCE_DIR}/../QR/SW/io/JsonDumper.cpp
-${PROJECT_SOURCE_DIR}/../QR/SW/json_loader.cpp)
+${PROJECT_SOURCE_DIR}/../QR/SW/json_loader.cpp
+)
 
 add_subdirectory(Thirdparty/g2o)
 
+# Baseline library (no caps, uses INT_MAX defaults in Optimizer.cc)
+add_library(${PROJECT_NAME} SHARED ${ORB_SLAM3_SOURCES})
 target_link_libraries(${PROJECT_NAME}
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+# cap15_200 library: horizon=15, landmark=200
+add_library(${PROJECT_NAME}_cap15_200 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_cap15_200 PRIVATE HORIZON_CAP=15 LANDMARK_CAP=200)
+target_link_libraries(${PROJECT_NAME}_cap15_200
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+# cap10_150 library: horizon=10, landmark=150
+add_library(${PROJECT_NAME}_cap10_150 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_cap10_150 PRIVATE HORIZON_CAP=10 LANDMARK_CAP=150)
+target_link_libraries(${PROJECT_NAME}_cap10_150
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+# split-cap ablation libraries
+add_library(${PROJECT_NAME}_h15_lmINF SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_lmINF PRIVATE HORIZON_CAP=15)
+target_link_libraries(${PROJECT_NAME}_h15_lmINF
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_hINF_lm200 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_hINF_lm200 PRIVATE LANDMARK_CAP=200)
+target_link_libraries(${PROJECT_NAME}_hINF_lm200
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_h10_lmINF SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h10_lmINF PRIVATE HORIZON_CAP=10)
+target_link_libraries(${PROJECT_NAME}_h10_lmINF
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_h10_lm200 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h10_lm200 PRIVATE HORIZON_CAP=10 LANDMARK_CAP=200)
+target_link_libraries(${PROJECT_NAME}_h10_lm200
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_hINF_lm150 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_hINF_lm150 PRIVATE LANDMARK_CAP=150)
+target_link_libraries(${PROJECT_NAME}_hINF_lm150
 ${OpenCV_LIBS}
 ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
@@ -244,6 +341,40 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Monocular-Iner
 add_executable(mono_inertial_euroc
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc ${PROJECT_NAME})
+
+# LBA cap experiment binaries (horizon + landmark cap for ATE comparison)
+add_executable(mono_inertial_euroc_baseline
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_baseline ${PROJECT_NAME})
+
+add_executable(mono_inertial_euroc_cap15_200
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_cap15_200 ${PROJECT_NAME}_cap15_200)
+
+add_executable(mono_inertial_euroc_cap10_150
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_cap10_150 ${PROJECT_NAME}_cap10_150)
+
+# split-cap ablation binaries
+add_executable(mono_inertial_euroc_h15_lmINF
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_lmINF ${PROJECT_NAME}_h15_lmINF)
+
+add_executable(mono_inertial_euroc_hINF_lm200
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_hINF_lm200 ${PROJECT_NAME}_hINF_lm200)
+
+add_executable(mono_inertial_euroc_h10_lmINF
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h10_lmINF ${PROJECT_NAME}_h10_lmINF)
+
+add_executable(mono_inertial_euroc_h10_lm200
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h10_lm200 ${PROJECT_NAME}_h10_lm200)
+
+add_executable(mono_inertial_euroc_hINF_lm150
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_hINF_lm150 ${PROJECT_NAME}_hINF_lm150)
 
 add_executable(mono_inertial_hw_export
         Examples/Monocular-Inertial/mono_inertial_hw_export.cc)

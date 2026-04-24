@@ -1145,6 +1145,15 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     return nInitialCorrespondences-nBad;
 }
 
+// Compile-time caps for local BA horizon / landmark count.
+// Override by passing -DHORIZON_CAP=<N> -DLANDMARK_CAP=<M> at build time.
+#ifndef HORIZON_CAP
+#define HORIZON_CAP INT_MAX
+#endif
+#ifndef LANDMARK_CAP
+#define LANDMARK_CAP INT_MAX
+#endif
+
 void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges)
 {
     // Local KeyFrames: First Breath Search from Current Keyframe
@@ -1177,6 +1186,31 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             lLocalKeyFrames.push_back(pKFi);
     }
 
+    // Horizon cap: always keep pKF, pick top (HORIZON_CAP-1) covisible.
+    // Demoted KFs are flagged so the fixed-KF pass below catches them.
+    if ((int)lLocalKeyFrames.size() > HORIZON_CAP)
+    {
+        std::vector<std::pair<int, KeyFrame*>> weighted;
+        weighted.reserve(lLocalKeyFrames.size());
+        for (KeyFrame* pKFi : lLocalKeyFrames)
+        {
+            if (pKFi == pKF) continue;
+            weighted.emplace_back(pKF->GetWeight(pKFi), pKFi);
+        }
+        std::sort(weighted.begin(), weighted.end(),
+                  [](const std::pair<int, KeyFrame*>& a,
+                     const std::pair<int, KeyFrame*>& b) {
+                      return a.first > b.first;
+                  });
+        const int keep_extra = std::max(0, HORIZON_CAP - 1);
+        for (std::size_t i = (std::size_t)keep_extra; i < weighted.size(); ++i)
+            weighted[i].second->mnBALocalForKF = 0;
+        lLocalKeyFrames.clear();
+        lLocalKeyFrames.push_back(pKF);
+        for (std::size_t i = 0; i < (std::size_t)keep_extra && i < weighted.size(); ++i)
+            lLocalKeyFrames.push_back(weighted[i].second);
+    }
+
     // Local MapPoints seen in Local KeyFrames
     num_fixedKF = 0;
     list<MapPoint*> lLocalMapPoints;
@@ -1203,6 +1237,23 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     }
                 }
         }
+    }
+
+    // Landmark cap: keep top LANDMARK_CAP by observation count.
+    if ((int)lLocalMapPoints.size() > LANDMARK_CAP)
+    {
+        std::vector<std::pair<int, MapPoint*>> ranked;
+        ranked.reserve(lLocalMapPoints.size());
+        for (MapPoint* pMP : lLocalMapPoints)
+            ranked.emplace_back(pMP->Observations(), pMP);
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const std::pair<int, MapPoint*>& a,
+                     const std::pair<int, MapPoint*>& b) {
+                      return a.first > b.first;
+                  });
+        lLocalMapPoints.clear();
+        for (std::size_t i = 0; i < (std::size_t)LANDMARK_CAP && i < ranked.size(); ++i)
+            lLocalMapPoints.push_back(ranked[i].second);
     }
 
     // Fixed Keyframes. Keyframes that see Local MapPoints but that are not Local Keyframes
