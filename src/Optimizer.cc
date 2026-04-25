@@ -72,7 +72,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
     // ==== ASIC/JSON 全局 BA 通路（可选） ====
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
         HardwareAdapter::LocalBAInput hw_input;
         hw_input.local_kfs.assign(vpKFs.begin(), vpKFs.end());
         hw_input.fixed_kfs.clear();
@@ -1282,9 +1282,9 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         return;
     }
 
-    // ==== ASIC/JSON 硬件通路（可选） ====
+    // ==== ASIC/JSON/CPU-QR 通路（可选） ====
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
         HardwareAdapter::LocalBAInput hw_input;
         hw_input.local_kfs = lLocalKeyFrames;
         hw_input.fixed_kfs = lFixedCameras;
@@ -1306,7 +1306,10 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 const Sophus::SE3f& T = kv.second;
                 kf->SetPose(T);
             }
-            // TODO: 可在此处根据 hw_res.landmark_updates 更新 MapPoint
+            for (const auto& kv : hw_res.landmark_updates) {
+                MapPoint* mp = kv.first;
+                if (mp && !mp->isBad()) mp->SetWorldPos(kv.second);
+            }
             return; // 硬件求解成功则跳过原生 BA
         }
         // 若硬件未成功，则继续执行原生 BA
@@ -1809,7 +1812,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
 {   
     // ==== ASIC/JSON Pose-only 图优化（Sim3→SE3 近似） ====
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
         HardwareAdapter::LocalBAInput hw_input;
         hw_input.map = pMap;
         hw_input.inertial = pMap->IsInertial();
@@ -2866,7 +2869,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
     // ==== ASIC/JSON 硬件通路 (LocalInertialBA) ====
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.dump_json) {
+    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
         HardwareAdapter::LocalBAInput hw_input;
         // 合并 temporal 和 visual KFs 到 local_kfs
         for(KeyFrame* kf : vpOptimizableKFs) hw_input.local_kfs.push_back(kf);
@@ -2891,6 +2894,10 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                 KeyFrame* kf = kv.first;
                 const Sophus::SE3f& T = kv.second;
                 kf->SetPose(T);
+            }
+            for (const auto& kv : hw_res.landmark_updates) {
+                MapPoint* mp = kv.first;
+                if (mp && !mp->isBad()) mp->SetWorldPos(kv.second);
             }
             return;
         }

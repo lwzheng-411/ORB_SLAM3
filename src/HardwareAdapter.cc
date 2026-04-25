@@ -13,6 +13,15 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <fcntl.h>
+#include <iostream>
+#include <sstream>
+#include <sys/wait.h>
+#include <unistd.h>
 
 // 全局缓存：保存待写入的 JSON payload，供 Optimizer 在 LBA 完成后使用
 DumpPayload g_pending_json_payload;
@@ -106,6 +115,157 @@ bool IsKeyFrameInSet(KeyFrame* kf, const std::set<KeyFrame*>& s) {
     return s.find(kf) != s.end();
 }
 
+std::string CpuQrSolverPath() {
+    const char* env = std::getenv("CPU_QR_SOLVER_BIN");
+    if (env && env[0] != '\0') return std::string(env);
+    return "/home/zlw/End2End/QR/SW/json/measure_cpu_qr";
+}
+
+std::string CpuQrScratchRoot() {
+    const char* env = std::getenv("CPU_QR_SCRATCH_DIR");
+    if (env && env[0] != '\0') return std::string(env);
+    return "/tmp/orbslam3_cpu_qr_online";
+}
+
+Eigen::Matrix3f ExpSO3(const Eigen::Vector3f& omega) {
+    const float theta = omega.norm();
+    if (theta < 1e-8f) return Eigen::Matrix3f::Identity();
+    Eigen::Matrix3f omega_hat;
+    omega_hat << 0.0f, -omega(2), omega(1),
+                 omega(2), 0.0f, -omega(0),
+                 -omega(1), omega(0), 0.0f;
+    return Eigen::Matrix3f::Identity()
+        + (std::sin(theta) / theta) * omega_hat
+        + ((1.0f - std::cos(theta)) / (theta * theta)) * omega_hat * omega_hat;
+}
+
+void UpsertPose(DumpPayload& payload, KeyFrame* kf) {
+    if (!kf || kf->isBad()) return;
+    const int pose_id = static_cast<int>(kf->mnId);
+    for (auto& p : payload.poses) {
+        if (p.pose_id == pose_id) {
+            p.Rcw = kf->GetRotation();
+            p.tcw = kf->GetTranslation();
+            return;
+        }
+    }
+    DumpPose p;
+    p.pose_id = pose_id;
+    p.Rcw = kf->GetRotation();
+    p.tcw = kf->GetTranslation();
+    payload.poses.push_back(p);
+}
+
+void AddFixedPosePriors(DumpPayload& payload, const std::list<KeyFrame*>& fixed_kfs) {
+    const char* env = std::getenv("CPU_QR_FIXED_SIGMA");
+    const float sigma = env ? std::stof(env) : 1e-3f;
+    for (KeyFrame* kf : fixed_kfs) {
+        if (!kf || kf->isBad()) continue;
+        DumpPrior p;
+        p.pose_id = static_cast<int>(kf->mnId);
+        p.Rp = kf->GetRotation();
+        p.tp = kf->GetTranslation();
+        p.sigma = Eigen::Matrix<float, 6, 1>::Constant(sigma);
+        payload.priors.push_back(p);
+    }
+}
+
+bool RunCpuQrSolver(const std::string& json_dir,
+                    const SolverSwitch& sw,
+                    const std::string& output_path,
+                    const std::string& log_path) {
+    std::vector<std::string> args;
+    args.push_back(CpuQrSolverPath());
+    args.push_back(json_dir);
+    args.push_back("--online");
+    args.push_back("--output=" + output_path);
+    args.push_back("--huber=2.5");
+    args.push_back("--max-trails=" + std::to_string(sw.hw_max_trails));
+    const char* direct = std::getenv("CPU_QR_DIRECT");
+    if (!direct || std::string(direct) != "1") {
+        args.push_back("--tsqr");
+        args.push_back("--col-phase");
+    }
+
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (auto& arg : args) argv.push_back(arg.data());
+    argv.push_back(nullptr);
+
+    pid_t pid = fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        int fd = open(log_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd < 0) fd = open("/dev/null", O_WRONLY);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execvp(argv[0], argv.data());
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return false;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+bool ParseCpuQrOutput(const std::string& output_path,
+                      std::map<int, Eigen::Matrix<float, 6, 1>>& pose_deltas,
+                      std::map<int, Eigen::Vector3f>& landmark_deltas) {
+    std::ifstream in(output_path);
+    if (!in.is_open()) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.rfind("POSE_1ITER ", 0) == 0) {
+            const std::size_t hash = line.find('#');
+            if (hash == std::string::npos) continue;
+            std::istringstream head(line.substr(0, hash));
+            std::istringstream vals(line.substr(hash + 1));
+            std::string tag;
+            int id = -1;
+            head >> tag >> id;
+            Eigen::Matrix<float, 6, 1> delta;
+            for (int i = 0; i < 6; ++i) {
+                if (!(vals >> delta(i))) return false;
+            }
+            pose_deltas[id] = delta;
+        } else if (line.rfind("LANDMARK_1ITER ", 0) == 0) {
+            const std::size_t hash = line.find('#');
+            if (hash == std::string::npos) continue;
+            std::istringstream head(line.substr(0, hash));
+            std::istringstream vals(line.substr(hash + 1));
+            std::string tag;
+            int id = -1;
+            head >> tag >> id;
+            Eigen::Vector3f delta;
+            for (int i = 0; i < 3; ++i) {
+                if (!(vals >> delta(i))) return false;
+            }
+            landmark_deltas[id] = delta;
+        }
+    }
+    return !pose_deltas.empty() || !landmark_deltas.empty();
+}
+
+bool DeltaLooksSafe(const std::map<int, Eigen::Matrix<float, 6, 1>>& pose_deltas,
+                    const std::map<int, Eigen::Vector3f>& landmark_deltas) {
+    const char* env = std::getenv("CPU_QR_MAX_DELTA");
+    const float max_pose_delta = env ? std::stof(env) : 5.0f;
+    for (const auto& kv : pose_deltas) {
+        if (!kv.second.allFinite()) return false;
+        if (kv.second.head<3>().norm() > max_pose_delta) return false;
+        if (kv.second.tail<3>().norm() > max_pose_delta) return false;
+    }
+    for (const auto& kv : landmark_deltas) {
+        if (!kv.second.allFinite()) return false;
+        if (kv.second.norm() > 1000.0f * max_pose_delta) return false;
+    }
+    return true;
+}
+
+
 }  // namespace
 
 HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
@@ -114,6 +274,10 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
     const std::string& json_dir) {
     LocalBAResult result;
     if (!input.current_kf || !input.map) {
+        return result;
+    }
+
+    if (sw.use_cpu_qr_solver && input.map->IsInertial() && (!input.map->isImuInitialized() || !input.map->GetIniertialBA2())) {
         return result;
     }
 
@@ -136,8 +300,63 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
         g_has_pending_json = true;
     }
 
-    // TODO: 在此处调用 ASIC 硬件求解，并填充 result.pose_updates / landmark_updates
-    // 当前返回 success=false，外层将回退到原生 BA
+    if (sw.use_cpu_qr_solver) {
+        namespace fs = std::filesystem;
+        DumpPayload payload = exporter.snapshotPending(false);
+        for (KeyFrame* kf : input.local_kfs) UpsertPose(payload, kf);
+        for (KeyFrame* kf : input.fixed_kfs) UpsertPose(payload, kf);
+        AddFixedPosePriors(payload, input.fixed_kfs);
+        if (payload.poses.empty() || payload.observations.empty()) {
+            return result;
+        }
+
+        std::string scratch_dir = CpuQrScratchRoot() + "/pid_" + std::to_string(static_cast<long long>(getpid()));
+        std::string output_path = scratch_dir + "/delta_x.txt";
+        std::string log_path = scratch_dir + "/measure_cpu_qr.log";
+        try {
+            fs::create_directories(scratch_dir);
+            DumpAllJson(payload, scratch_dir);
+        } catch (const std::exception& e) {
+            std::cerr << "[CPU_QR] failed to write JSON: " << e.what() << std::endl;
+            return result;
+        }
+
+        if (!RunCpuQrSolver(scratch_dir, sw, output_path, log_path)) {
+            std::cerr << "[CPU_QR] solver failed, log: " << log_path << std::endl;
+            return result;
+        }
+
+        std::map<int, Eigen::Matrix<float, 6, 1>> pose_deltas;
+        std::map<int, Eigen::Vector3f> landmark_deltas;
+        if (!ParseCpuQrOutput(output_path, pose_deltas, landmark_deltas)) {
+            std::cerr << "[CPU_QR] failed to parse output: " << output_path << std::endl;
+            return result;
+        }
+
+        if (!DeltaLooksSafe(pose_deltas, landmark_deltas)) {
+            std::cerr << "[CPU_QR] unsafe delta, fallback to native BA: " << output_path << std::endl;
+            return result;
+        }
+
+        for (KeyFrame* kf : input.local_kfs) {
+            if (!kf || kf->isBad()) continue;
+            auto it = pose_deltas.find(static_cast<int>(kf->mnId));
+            if (it != pose_deltas.end()) {
+                Sophus::SE3f Tcw = kf->GetPose();
+                Eigen::Matrix3f Rcw = ExpSO3(it->second.tail<3>()) * Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation() + it->second.head<3>();
+                result.pose_updates[kf] = Sophus::SE3f(Rcw, tcw);
+            }
+        }
+        for (MapPoint* mp : input.local_mps) {
+            if (!mp || mp->isBad()) continue;
+            auto it = landmark_deltas.find(static_cast<int>(mp->mnId));
+            if (it != landmark_deltas.end()) result.landmark_updates[mp] = mp->GetWorldPos().cast<float>() + it->second;
+        }
+        result.success = !result.pose_updates.empty();
+        return result;
+    }
+
     result.success = false;
     return result;
 }
