@@ -131,8 +131,18 @@ int main(int argc, char *argv[])
     double t_resize = 0.f;
     double t_track = 0.f;
 
+    int stop_after_frames = 0;
+    if (const char* env_stop = std::getenv("SLAM_STOP_AFTER_FRAMES")) {
+        stop_after_frames = std::max(0, std::atoi(env_stop));
+        if (stop_after_frames > 0) {
+            cout << "SLAM_STOP_AFTER_FRAMES=" << stop_after_frames << endl;
+        }
+    }
+
     int proccIm=0;
-    for (seq = 0; seq<num_seq; seq++)
+    int total_processed_frames = 0;
+    bool stop_requested = false;
+    for (seq = 0; seq<num_seq && !stop_requested; seq++)
     {
 
         // Main loop
@@ -202,6 +212,18 @@ int main(int argc, char *argv[])
             // cout << "tframe = " << tframe << endl;
             SLAM.TrackMonocular(im,tframe,vImuMeas); // TODO change to monocular_inertial
 
+            // Serial LBA mode: wait for Local Mapping to finish processing
+            // any inserted keyframe (incl. LBA) before reading next frame.
+            // This breaks real-time but lets slow custom solvers (CPU QR) run
+            // multi-iteration LM without map resets.
+            static const char* env_serial = std::getenv("SLAM_SERIAL_LBA");
+            static bool serial_mode = (env_serial && std::string(env_serial) == "1");
+            if (serial_mode) {
+                while (!SLAM.GetLocalMapper()->AcceptKeyFrames()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
+
     #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
     #else
@@ -218,6 +240,12 @@ int main(int argc, char *argv[])
             // std::cout << "ttrack: " << ttrack << std::endl;
 
             vTimesTrack[ni]=ttrack;
+            total_processed_frames++;
+            if (stop_after_frames > 0 && total_processed_frames >= stop_after_frames) {
+                cout << "[SLAM_STOP_AFTER_FRAMES] processed " << total_processed_frames << " frames" << endl;
+                stop_requested = true;
+                break;
+            }
 
             // Wait to load the next frame
             double T=0;
@@ -240,14 +268,7 @@ int main(int argc, char *argv[])
     // Stop all threads
     SLAM.Shutdown();
 
-    // Force exit in headless mode to avoid hang in viewer thread cleanup
-    const char* env_no_viewer_exit = std::getenv("SLAM_NO_VIEWER");
-    if (env_no_viewer_exit && (std::string(env_no_viewer_exit) == "1" || std::string(env_no_viewer_exit) == "true")) {
-        std::cout << "[Headless] Force exit after shutdown" << std::endl;
-        _exit(0);
-    }
-
-    // Save camera trajectory
+    // Save camera trajectory (must be BEFORE headless force exit)
     if (bFileName)
     {
         const string kf_file =  "kf_" + string(argv[argc-1]) + ".txt";
@@ -259,6 +280,13 @@ int main(int argc, char *argv[])
     {
         SLAM.SaveTrajectoryEuRoC("CameraTrajectory.txt");
         SLAM.SaveKeyFrameTrajectoryEuRoC("KeyFrameTrajectory.txt");
+    }
+
+    // Force exit in headless mode to avoid hang in viewer thread cleanup
+    const char* env_no_viewer_exit = std::getenv("SLAM_NO_VIEWER");
+    if (env_no_viewer_exit && (std::string(env_no_viewer_exit) == "1" || std::string(env_no_viewer_exit) == "true")) {
+        std::cout << "[Headless] Force exit after shutdown" << std::endl;
+        _exit(0);
     }
 
     return 0;
