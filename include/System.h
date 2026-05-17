@@ -190,6 +190,9 @@ public:
     const Atlas* GetAtlas() const;
     const Settings* GetSettings() const;
 
+    // Accessor for serial LBA mode: caller waits on AcceptKeyFrames() between frames
+    LocalMapping* GetLocalMapper() { return mpLocalMapper; }
+
 #ifdef REGISTER_TIMES
     void InsertRectTime(double& time);
     void InsertResizeTime(double& time);

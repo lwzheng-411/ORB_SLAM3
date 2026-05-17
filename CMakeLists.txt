@@ -179,6 +179,59 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lgtsam -ltbb
 )
 
+# slot-aware pruning smoke library: horizon=15, per-KF feature cap=160, per-landmark obs cap=10
+add_library(${PROJECT_NAME}_h15_f160_o10 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_f160_o10 PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=160 ASIC_OBS_PER_LANDMARK_CAP=10)
+target_link_libraries(${PROJECT_NAME}_h15_f160_o10
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_h15_f120_o8 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_f120_o8 PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=120 ASIC_OBS_PER_LANDMARK_CAP=8)
+target_link_libraries(${PROJECT_NAME}_h15_f120_o8
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_h15_f100_o6 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_f100_o6 PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=100 ASIC_OBS_PER_LANDMARK_CAP=6)
+target_link_libraries(${PROJECT_NAME}_h15_f100_o6
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+add_library(${PROJECT_NAME}_h15_f200_o12 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_f200_o12 PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=200 ASIC_OBS_PER_LANDMARK_CAP=12)
+target_link_libraries(${PROJECT_NAME}_h15_f200_o12
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
 # split-cap ablation libraries
 add_library(${PROJECT_NAME}_h15_lmINF SHARED ${ORB_SLAM3_SOURCES})
 target_compile_definitions(${PROJECT_NAME}_h15_lmINF PRIVATE HORIZON_CAP=15)
@@ -354,6 +407,22 @@ target_link_libraries(mono_inertial_euroc_cap15_200 ${PROJECT_NAME}_cap15_200)
 add_executable(mono_inertial_euroc_cap10_150
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc_cap10_150 ${PROJECT_NAME}_cap10_150)
+
+add_executable(mono_inertial_euroc_h15_f160_o10
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_f160_o10 ${PROJECT_NAME}_h15_f160_o10)
+
+add_executable(mono_inertial_euroc_h15_f120_o8
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_f120_o8 ${PROJECT_NAME}_h15_f120_o8)
+
+add_executable(mono_inertial_euroc_h15_f100_o6
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_f100_o6 ${PROJECT_NAME}_h15_f100_o6)
+
+add_executable(mono_inertial_euroc_h15_f200_o12
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_f200_o12 ${PROJECT_NAME}_h15_f200_o12)
 
 # split-cap ablation binaries
 add_executable(mono_inertial_euroc_h15_lmINF

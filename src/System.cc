@@ -43,6 +43,21 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false), mbResetActiveMap(false),
     mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false)
 {
+    // Deterministic RNG when ORB_SEED is set: stabilize ATE across runs by
+    // seeding both stdlib rand() (used by Sim3Solver / TwoViewReconstruction
+    // / MLPnPsolver / Tracking RANSAC) and OpenCV's global RNG.
+    if (const char* seed_env = std::getenv("ORB_SEED")) {
+        if (seed_env[0] != '\0') {
+            try {
+                unsigned int s = static_cast<unsigned int>(std::stoul(seed_env));
+                std::srand(s);
+                cv::theRNG().state = static_cast<uint64_t>(s);
+                std::cout << "[ORB_SEED] RNG seeded with " << s << std::endl;
+            } catch (...) {
+                std::cerr << "[ORB_SEED] invalid seed value, ignored" << std::endl;
+            }
+        }
+    }
     // Output welcome message
     cout << endl <<
     "ORB-SLAM3 Copyright (C) 2017-2020 Carlos Campos, Richard Elvira, Juan J. Gómez, José M.M. Montiel and Juan D. Tardós, University of Zaragoza." << endl <<

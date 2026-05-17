@@ -21,6 +21,8 @@
 
 
 #include <complex>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 
 #include <Eigen/StdVector>
@@ -43,6 +45,8 @@
 #include<mutex>
 #include<fstream>
 #include<iomanip>
+#include<cstdlib>
+#include<string>
 
 #include "OptimizableTypes.h"
 
@@ -95,7 +99,10 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
             }
             for (const auto& kv : hw_res.landmark_updates) {
                 MapPoint* mp = kv.first;
-                if (mp && !mp->isBad()) mp->SetWorldPos(kv.second);
+                if (mp && !mp->isBad()) {
+                    mp->SetWorldPos(kv.second);
+                    mp->UpdateNormalAndDepth();
+                }
             }
             return; // 硬件成功则跳过原生 BA
         }
@@ -1308,7 +1315,10 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             }
             for (const auto& kv : hw_res.landmark_updates) {
                 MapPoint* mp = kv.first;
-                if (mp && !mp->isBad()) mp->SetWorldPos(kv.second);
+                if (mp && !mp->isBad()) {
+                    mp->SetWorldPos(kv.second);
+                    mp->UpdateNormalAndDepth();
+                }
             }
             return; // 硬件求解成功则跳过原生 BA
         }
@@ -1557,7 +1567,13 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     std::map<int, g2o::SE3Quat> initial_pose_estimates;
     std::map<int, Eigen::Vector3d> initial_lm_estimates;
     SolverSwitch solver_sw_pre = SolverSwitch::FromEnv();
-    bool export_delta = (solver_sw_pre.dump_json || solver_sw_pre.dump_baseline);
+    // DUMP_NATIVE_LBA_DX gate: trace native g2o solve for diff vs ASIC (read-only addition).
+    bool dump_native_lba_dx = false;
+    {
+        const char* nv = std::getenv("DUMP_NATIVE_LBA_DX");
+        if (nv && (std::string(nv) == "1" || std::string(nv) == "true")) dump_native_lba_dx = true;
+    }
+    bool export_delta = (solver_sw_pre.dump_json || solver_sw_pre.dump_baseline || dump_native_lba_dx);
     if (export_delta) {
         for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
             KeyFrame* pKFi = *lit;
@@ -1573,27 +1589,144 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
     optimizer.initializeOptimization();
 
-    // Run 1 iteration first, save delta_x for 1-iter comparison
-    optimizer.optimize(1);
-
-    // Save 1-iter delta_x (FP64 ground truth)
-    std::map<int, g2o::SE3Quat> iter1_pose_estimates;
-    std::map<int, Eigen::Vector3d> iter1_lm_estimates;
-    if (export_delta) {
-        for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
-            KeyFrame* pKFi = *lit;
-            g2o::VertexSE3Expmap* v = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
-            if (v && !v->fixed()) iter1_pose_estimates[pKFi->mnId] = v->estimate();
-        }
-        for (auto lit = lLocalMapPoints.begin(); lit != lLocalMapPoints.end(); lit++) {
-            MapPoint* pMP = *lit;
-            g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
-            if (v) iter1_lm_estimates[pMP->mnId] = v->estimate();
+    // Run 10 single-iteration steps, capturing per-iter snapshot for K=1..10.
+    // Snapshot used downstream by write_delta_x to dump delta_x_g2o_fp64_<K>iter.txt.
+    std::vector<std::map<int, g2o::SE3Quat>> iterK_pose_estimates(11);
+    std::vector<std::map<int, Eigen::Vector3d>> iterK_lm_estimates(11);
+    for (int K = 1; K <= 10; K++) {
+        optimizer.optimize(1);
+        if (export_delta) {
+            for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
+                KeyFrame* pKFi = *lit;
+                g2o::VertexSE3Expmap* v = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
+                if (v && !v->fixed()) iterK_pose_estimates[K][pKFi->mnId] = v->estimate();
+            }
+            for (auto lit = lLocalMapPoints.begin(); lit != lLocalMapPoints.end(); lit++) {
+                MapPoint* pMP = *lit;
+                g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
+                if (v) iterK_lm_estimates[K][pMP->mnId] = v->estimate();
+            }
         }
     }
 
-    // Continue remaining 9 iterations
-    optimizer.optimize(9);
+    // ==== DUMP_NATIVE_LBA_DX trace dump (visual-only LBA) ====
+    // Writes /tmp/native_lba_dx/call_<K>/{input.json,dx.txt} for native vs ASIC diff.
+    // Uses a per-process call counter; snapshot uses iterK_pose_estimates already captured above.
+    if (dump_native_lba_dx) {
+        static int s_native_lba_call_counter = 0;
+        const int call_id = s_native_lba_call_counter++;
+        const std::string trace_root = "/tmp/native_lba_dx";
+        const std::string call_dir = trace_root + "/call_" + std::to_string(call_id);
+        std::error_code ec;
+        std::filesystem::create_directories(call_dir, ec);
+
+        // Write input.json (KFs, fixed KFs, observations summary, no IMU here)
+        std::ofstream jin(call_dir + "/input.json");
+        if (jin.is_open()) {
+            jin << std::scientific << std::setprecision(15);
+            jin << "{\n";
+            jin << "  \"call_id\": " << call_id << ",\n";
+            jin << "  \"path\": \"LocalBundleAdjustment\",\n";
+            jin << "  \"current_kf_id\": " << pKF->mnId << ",\n";
+            jin << "  \"n_local_kfs\": " << lLocalKeyFrames.size() << ",\n";
+            jin << "  \"n_fixed_kfs\": " << lFixedCameras.size() << ",\n";
+            jin << "  \"n_local_mps\": " << lLocalMapPoints.size() << ",\n";
+            jin << "  \"n_edges_mono\": " << vpEdgesMono.size() << ",\n";
+            jin << "  \"n_edges_stereo\": " << vpEdgesStereo.size() << ",\n";
+            jin << "  \"n_edges_body\": " << vpEdgesBody.size() << ",\n";
+            jin << "  \"local_kfs\": [\n";
+            bool first_lk = true;
+            for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
+                KeyFrame* pKFi = *lit;
+                Sophus::SE3f Tcw = pKFi->GetPose();
+                Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation();
+                if (!first_lk) jin << ",\n";
+                first_lk = false;
+                jin << "    {\"id\":" << pKFi->mnId << ",\"fixed\":" << ((pKFi->mnId==pMap->GetInitKFid())?"true":"false") << ",";
+                jin << "\"Rcw\":[" << Rcw(0,0) << "," << Rcw(0,1) << "," << Rcw(0,2) << "," << Rcw(1,0) << "," << Rcw(1,1) << "," << Rcw(1,2) << "," << Rcw(2,0) << "," << Rcw(2,1) << "," << Rcw(2,2) << "],";
+                jin << "\"tcw\":[" << tcw(0) << "," << tcw(1) << "," << tcw(2) << "]}";
+            }
+            jin << "\n  ],\n";
+            jin << "  \"fixed_kfs\": [";
+            bool first_fk = true;
+            for (auto lit = lFixedCameras.begin(); lit != lFixedCameras.end(); lit++) {
+                KeyFrame* pKFi = *lit;
+                Sophus::SE3f Tcw = pKFi->GetPose();
+                Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation();
+                if (!first_fk) jin << ",";
+                first_fk = false;
+                jin << "\n    {\"id\":" << pKFi->mnId << ",";
+                jin << "\"Rcw\":[" << Rcw(0,0) << "," << Rcw(0,1) << "," << Rcw(0,2) << "," << Rcw(1,0) << "," << Rcw(1,1) << "," << Rcw(1,2) << "," << Rcw(2,0) << "," << Rcw(2,1) << "," << Rcw(2,2) << "],";
+                jin << "\"tcw\":[" << tcw(0) << "," << tcw(1) << "," << tcw(2) << "]}";
+            }
+            jin << "\n  ]\n}\n";
+            jin.close();
+        }
+
+        // Write dx.txt (ASIC-compatible format: POSE_<K>ITER <id> <hex32 fp32 raw>... )
+        // omega from skew(dR) where dR = Ri.T @ Rk; dt = Ri.T @ (tk - ti); cam-local-right.
+        std::ofstream dxo(call_dir + "/dx.txt");
+        if (dxo.is_open()) {
+            dxo << "# Native g2o LBA delta_x (FP64, cumulative, dumped as FP32 hex for ASIC parity)\n";
+            dxo << "# Path: LocalBundleAdjustment (visual-only)\n";
+            dxo << "# call_id: " << call_id << " current_kf: " << pKF->mnId << "\n";
+            dxo << "# n_local_kfs: " << lLocalKeyFrames.size() << " n_local_mps: " << lLocalMapPoints.size() << "\n";
+            dxo << "# n_iter: 10 (10 outer iters, dumping cumulative delta after each)\n\n";
+            for (int K = 1; K <= 10; K++) {
+                dxo << "# === iter=" << K << " cumulative delta_x ===\n";
+                for (auto lit2 = lLocalKeyFrames.begin(); lit2 != lLocalKeyFrames.end(); lit2++) {
+                    KeyFrame* pKFi = *lit2;
+                    auto it_init = initial_pose_estimates.find(pKFi->mnId);
+                    if (it_init == initial_pose_estimates.end()) continue;
+                    auto it_opt = iterK_pose_estimates[K].find(pKFi->mnId);
+                    if (it_opt == iterK_pose_estimates[K].end()) continue;
+                    g2o::SE3Quat delta_T = it_init->second.inverse() * it_opt->second;
+                    Eigen::Vector3d dt = delta_T.translation();
+                    Eigen::Matrix3d dR = delta_T.rotation().toRotationMatrix();
+                    Eigen::Vector3d omega;
+                    omega << (dR(2,1)-dR(1,2))/2.0, (dR(0,2)-dR(2,0))/2.0, (dR(1,0)-dR(0,1))/2.0;
+                    dxo << "POSE_" << K << "ITER " << pKFi->mnId;
+                    char buf[16];
+                    for (int j = 0; j < 3; j++) {
+                        float f = static_cast<float>(dt(j));
+                        uint32_t u; std::memcpy(&u, &f, 4);
+                        std::snprintf(buf, sizeof(buf), "%08X", u);
+                        dxo << " " << buf;
+                    }
+                    for (int j = 0; j < 3; j++) {
+                        float f = static_cast<float>(omega(j));
+                        uint32_t u; std::memcpy(&u, &f, 4);
+                        std::snprintf(buf, sizeof(buf), "%08X", u);
+                        dxo << " " << buf;
+                    }
+                    dxo << "  # " << dt(0) << " " << dt(1) << " " << dt(2) << " " << omega(0) << " " << omega(1) << " " << omega(2) << "\n";
+                }
+                for (auto lit2 = lLocalMapPoints.begin(); lit2 != lLocalMapPoints.end(); lit2++) {
+                    MapPoint* pMP = *lit2;
+                    auto it_init = initial_lm_estimates.find(pMP->mnId);
+                    if (it_init == initial_lm_estimates.end()) continue;
+                    auto it_opt = iterK_lm_estimates[K].find(pMP->mnId);
+                    if (it_opt == iterK_lm_estimates[K].end()) continue;
+                    Eigen::Vector3d delta_lm = it_opt->second - it_init->second;
+                    dxo << "LANDMARK_" << K << "ITER " << pMP->mnId;
+                    char buf[16];
+                    for (int j = 0; j < 3; j++) {
+                        float f = static_cast<float>(delta_lm(j));
+                        uint32_t u; std::memcpy(&u, &f, 4);
+                        std::snprintf(buf, sizeof(buf), "%08X", u);
+                        dxo << " " << buf;
+                    }
+                    dxo << "  # " << delta_lm(0) << " " << delta_lm(1) << " " << delta_lm(2) << "\n";
+                }
+                dxo << "\n";
+            }
+            dxo.close();
+        }
+        std::cout << "[DUMP_NATIVE_LBA_DX] LBA visual call_" << call_id << " -> " << call_dir << std::endl;
+    }
+    // ==== END DUMP_NATIVE_LBA_DX ====
 
     vector<pair<KeyFrame*,MapPoint*> > vToErase;
     vToErase.reserve(vpEdgesMono.size()+vpEdgesBody.size()+vpEdgesStereo.size());
@@ -1780,25 +1913,11 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             std::cout << "[LBA Delta] FP64 " << n_iter << "-iter delta_x saved to: " << path << std::endl;
         };
 
-        // Save 1-iter delta_x
-        write_delta_x(dir_path + "/delta_x_g2o_fp64_1iter.txt", 1,
-                       iter1_pose_estimates, iter1_lm_estimates);
-
-        // Save 10-iter delta_x (final optimizer state)
-        std::map<int, g2o::SE3Quat> final_pose_estimates;
-        std::map<int, Eigen::Vector3d> final_lm_estimates;
-        for (auto lit2 = lLocalKeyFrames.begin(); lit2 != lLocalKeyFrames.end(); lit2++) {
-            KeyFrame* pKFi = *lit2;
-            g2o::VertexSE3Expmap* v = static_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFi->mnId));
-            if (v && !v->fixed()) final_pose_estimates[pKFi->mnId] = v->estimate();
+        // Save delta_x for every iteration K=1..10 (FP64 ground truth).
+        for (int K = 1; K <= 10; K++) {
+            const std::string path = dir_path + "/delta_x_g2o_fp64_" + std::to_string(K) + "iter.txt";
+            write_delta_x(path, K, iterK_pose_estimates[K], iterK_lm_estimates[K]);
         }
-        for (auto lit2 = lLocalMapPoints.begin(); lit2 != lLocalMapPoints.end(); lit2++) {
-            MapPoint* pMP = *lit2;
-            g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
-            if (v) final_lm_estimates[pMP->mnId] = v->estimate();
-        }
-        write_delta_x(dir_path + "/delta_x_g2o_fp64_10iter.txt", 10,
-                       final_pose_estimates, final_lm_estimates);
     }
 
     pMap->IncreaseChangeIndex();
@@ -2842,7 +2961,12 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     }
 
     // Fixed KFs which are not covisible optimizable
-    const int maxFixKF = 200;
+    // env CPU_QR_MAX_FIXED_KF caps fixed_kfs growth; 200 = ORB-SLAM3 default
+    int maxFixKF = 200;
+    if (const char* mfkf = std::getenv("CPU_QR_MAX_FIXED_KF")) {
+        int v = std::atoi(mfkf);
+        if (v > 0) maxFixKF = v;
+    }
 
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
     {
@@ -2888,17 +3012,32 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         }
         
         HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, solver_sw, dump_dir);
-        
-        if (hw_res.success) {
+        const char* trace_only_env = std::getenv("CPU_QR_TRACE_ONLY");
+        const bool cpu_qr_trace_only = trace_only_env && (std::string(trace_only_env) == "1" || std::string(trace_only_env) == "true");
+
+        if (hw_res.success && !cpu_qr_trace_only) {
              for (const auto& kv : hw_res.pose_updates) {
                 KeyFrame* kf = kv.first;
                 const Sophus::SE3f& T = kv.second;
                 kf->SetPose(T);
             }
+            for (const auto& kv : hw_res.velocity_updates) {
+                KeyFrame* kf = kv.first;
+                if (kf && !kf->isBad()) kf->SetVelocity(kv.second);
+            }
+            for (const auto& kv : hw_res.bias_updates) {
+                KeyFrame* kf = kv.first;
+                if (kf && !kf->isBad()) kf->SetNewBias(kv.second);
+            }
             for (const auto& kv : hw_res.landmark_updates) {
                 MapPoint* mp = kv.first;
-                if (mp && !mp->isBad()) mp->SetWorldPos(kv.second);
+                if (mp && !mp->isBad()) {
+                    mp->SetWorldPos(kv.second);
+                    mp->UpdateNormalAndDepth();
+                }
             }
+            // Flush input JSON to lba_kf_<id>/ for ASIC RTL replay
+            FlushPendingJson();
             return;
         }
     }
@@ -3240,15 +3379,37 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     // === Save BEFORE optimization state for baseline comparison ===
     std::map<int, std::pair<Eigen::Matrix3f, Eigen::Vector3f>> pose_before;
     std::map<int, Eigen::Vector3f> landmark_before;
+    // Native trace also wants velocity/bias per KF before optimization.
+    std::map<int, Eigen::Vector3f> vel_before;
+    std::map<int, Eigen::Vector3f> bg_before;
+    std::map<int, Eigen::Vector3f> ba_before;
     for(int i=0; i<N; i++) {
         KeyFrame* pKFi = vpOptimizableKFs[i];
         Sophus::SE3f Tcw = pKFi->GetPose();
         pose_before[pKFi->mnId] = {Tcw.rotationMatrix(), Tcw.translation()};
+        if (pKFi->bImu) {
+            vel_before[pKFi->mnId] = pKFi->GetVelocity();
+            IMU::Bias bb = pKFi->GetImuBias();
+            bg_before[pKFi->mnId] = Eigen::Vector3f(bb.bwx, bb.bwy, bb.bwz);
+            ba_before[pKFi->mnId] = Eigen::Vector3f(bb.bax, bb.bay, bb.baz);
+        }
     }
     for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd = lpOptVisKFs.end(); it!=itEnd; it++) {
         KeyFrame* pKFi = *it;
         Sophus::SE3f Tcw = pKFi->GetPose();
         pose_before[pKFi->mnId] = {Tcw.rotationMatrix(), Tcw.translation()};
+    }
+    // Fixed KFs also need pose for diff vs ASIC poses.json (which lists fixed first).
+    for(list<KeyFrame*>::iterator it=lFixedKeyFrames.begin(), itEnd=lFixedKeyFrames.end(); it!=itEnd; it++) {
+        KeyFrame* pKFi = *it;
+        Sophus::SE3f Tcw = pKFi->GetPose();
+        pose_before[pKFi->mnId] = {Tcw.rotationMatrix(), Tcw.translation()};
+        if (pKFi->bImu) {
+            vel_before[pKFi->mnId] = pKFi->GetVelocity();
+            IMU::Bias bb = pKFi->GetImuBias();
+            bg_before[pKFi->mnId] = Eigen::Vector3f(bb.bwx, bb.bwy, bb.bwz);
+            ba_before[pKFi->mnId] = Eigen::Vector3f(bb.bax, bb.bay, bb.baz);
+        }
     }
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++) {
         MapPoint* pMP = *lit;
@@ -3258,7 +3419,38 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     optimizer.initializeOptimization();
     optimizer.computeActiveErrors();
     float err = optimizer.activeRobustChi2();
-    optimizer.optimize(opt_it); // Originally to 2
+    // Run optimize(1) per outer iter to capture per-K snapshots for delta_x dump.
+    SolverSwitch sw_iter_capture = SolverSwitch::FromEnv();
+    // DUMP_NATIVE_LBA_DX: also capture per-iter for native trace dump.
+    bool dump_native_lba_dx_inertial = false;
+    {
+        const char* nv = std::getenv("DUMP_NATIVE_LBA_DX");
+        if (nv && (std::string(nv) == "1" || std::string(nv) == "true")) dump_native_lba_dx_inertial = true;
+    }
+    bool capture_per_iter = (sw_iter_capture.dump_json || sw_iter_capture.dump_baseline || dump_native_lba_dx_inertial);
+    std::vector<std::map<int, std::pair<Eigen::Matrix3d, Eigen::Vector3d>>> iterK_pose(opt_it + 1);
+    std::vector<std::map<int, Eigen::Vector3d>> iterK_lm(opt_it + 1);
+    for (int K = 1; K <= opt_it; K++) {
+        optimizer.optimize(1);
+        if (capture_per_iter) {
+            for (int i = 0; i < N; i++) {
+                KeyFrame* pKFi = vpOptimizableKFs[i];
+                VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
+                iterK_pose[K][pKFi->mnId] = {VP->estimate().Rcw[0], VP->estimate().tcw[0]};
+            }
+            for (auto it_kf = lpOptVisKFs.begin(); it_kf != lpOptVisKFs.end(); ++it_kf) {
+                KeyFrame* pKFi = *it_kf;
+                VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
+                iterK_pose[K][pKFi->mnId] = {VP->estimate().Rcw[0], VP->estimate().tcw[0]};
+            }
+            for (auto it_mp = lLocalMapPoints.begin(); it_mp != lLocalMapPoints.end(); ++it_mp) {
+                MapPoint* pMP = *it_mp;
+                g2o::VertexSBAPointXYZ* vP = static_cast<g2o::VertexSBAPointXYZ*>(
+                    optimizer.vertex(pMP->mnId + iniMPid + 1));
+                if (vP) iterK_lm[K][pMP->mnId] = vP->estimate();
+            }
+        }
+    }
     float err_end = optimizer.activeRobustChi2();
     if(pbStopFlag)
         optimizer.setForceStopFlag(pbStopFlag);
@@ -3513,11 +3705,212 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             
             baseline_out.close();
             std::cout << "[LBA Baseline] Saved to: " << baseline_path << std::endl;
-            
+
             // 同时刷新 pending JSON（确保 JSON 和 baseline 配对）
             FlushPendingJson();
         }
+
+        // ==== Export delta_x (FP64 ground truth): K=1..opt_it ====
+        auto write_delta_x_inertial = [&](int K, const std::string& path) {
+            std::ofstream out(path);
+            if (!out.is_open()) return;
+            out << std::scientific << std::setprecision(15);
+            out << "# g2o LBA delta_x (FP64 ground truth, LocalInertialBA)\n";
+            out << "# Algorithm: Levenberg-Marquardt, " << K << " iterations\n";
+            out << "# Precision: double (float64)\n";
+            out << "# KeyFrame: " << pKF->mnId << "\n";
+            out << "# Temporal KFs: " << vpOptimizableKFs.size() << "\n";
+            out << "# Visual KFs: " << lpOptVisKFs.size() << "\n";
+            out << "# Local MPs: " << lLocalMapPoints.size() << "\n";
+            out << "# bLarge: " << (bLarge ? "true" : "false") << "\n";
+            out << "# bRecInit: " << (bRecInit ? "true" : "false") << "\n\n";
+
+            out << "# === POSE DELTA_X [dt_x, dt_y, dt_z, omega_x, omega_y, omega_z] ===\n";
+            for (const auto& kv : iterK_pose[K]) {
+                int pid = kv.first;
+                auto pit = pose_before.find(pid);
+                if (pit == pose_before.end()) continue;
+                Eigen::Matrix3d Ri = pit->second.first.cast<double>();
+                Eigen::Vector3d ti = pit->second.second.cast<double>();
+                const Eigen::Matrix3d& Rk = kv.second.first;
+                const Eigen::Vector3d& tk = kv.second.second;
+                Eigen::Matrix3d dR = Ri.transpose() * Rk;
+                Eigen::Vector3d dt = Ri.transpose() * (tk - ti);
+                Eigen::Vector3d omega(
+                    (dR(2, 1) - dR(1, 2)) / 2.0,
+                    (dR(0, 2) - dR(2, 0)) / 2.0,
+                    (dR(1, 0) - dR(0, 1)) / 2.0);
+                out << "POSE " << pid;
+                for (int j = 0; j < 3; j++) out << " " << dt(j);
+                for (int j = 0; j < 3; j++) out << " " << omega(j);
+                out << "\n";
+            }
+
+            out << "\n# === LANDMARK DELTA_X [dx, dy, dz] ===\n";
+            for (const auto& kv : iterK_lm[K]) {
+                int lid = kv.first;
+                auto lit = landmark_before.find(lid);
+                if (lit == landmark_before.end()) continue;
+                Eigen::Vector3d li = lit->second.cast<double>();
+                Eigen::Vector3d delta = kv.second - li;
+                out << "LANDMARK " << lid;
+                for (int j = 0; j < 3; j++) out << " " << delta(j);
+                out << "\n";
+            }
+            out.close();
+        };
+
+        if (capture_per_iter) {
+            std::string base_dir = solver_sw_baseline.json_out_dir.empty()
+                                       ? "/tmp/orbslam3_hw_dump"
+                                       : solver_sw_baseline.json_out_dir;
+            std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
+            std::filesystem::create_directories(dir_path);
+            for (int K = 1; K <= opt_it; K++) {
+                const std::string path =
+                    dir_path + "/delta_x_g2o_fp64_" + std::to_string(K) + "iter.txt";
+                write_delta_x_inertial(K, path);
+            }
+            std::cout << "[LBA Delta] FP64 1.." << opt_it << "-iter delta_x saved to: "
+                      << dir_path << "/delta_x_g2o_fp64_*.txt" << std::endl;
+        }
     }
+
+    // ==== DUMP_NATIVE_LBA_DX trace dump (LocalInertialBA) ====
+    // Writes /tmp/native_lba_dx/call_<K>/{input.json,dx.txt} for native vs ASIC diff.
+    if (dump_native_lba_dx_inertial) {
+        static int s_native_inertial_call_counter = 0;
+        const int call_id = s_native_inertial_call_counter++;
+        const std::string trace_root = "/tmp/native_lba_dx";
+        const std::string call_dir = trace_root + "/call_" + std::to_string(call_id);
+        std::error_code ec;
+        std::filesystem::create_directories(call_dir, ec);
+
+        // input.json
+        std::ofstream jin(call_dir + "/input.json");
+        if (jin.is_open()) {
+            jin << std::scientific << std::setprecision(15);
+            jin << "{\n";
+            jin << "  \"call_id\": " << call_id << ",\n";
+            jin << "  \"path\": \"LocalInertialBA\",\n";
+            jin << "  \"current_kf_id\": " << pKF->mnId << ",\n";
+            jin << "  \"n_temporal_kfs\": " << vpOptimizableKFs.size() << ",\n";
+            jin << "  \"n_visual_kfs\": " << lpOptVisKFs.size() << ",\n";
+            jin << "  \"n_fixed_kfs\": " << lFixedKeyFrames.size() << ",\n";
+            jin << "  \"n_local_mps\": " << lLocalMapPoints.size() << ",\n";
+            jin << "  \"n_edges_mono\": " << vpEdgesMono.size() << ",\n";
+            jin << "  \"n_edges_stereo\": " << vpEdgesStereo.size() << ",\n";
+            jin << "  \"opt_it\": " << opt_it << ",\n";
+            jin << "  \"bLarge\": " << (bLarge?"true":"false") << ",\n";
+            jin << "  \"bRecInit\": " << (bRecInit?"true":"false") << ",\n";
+            // poses with id, fixed flag, Rcw, tcw, vw, bg, ba
+            auto write_kf_entry = [&](KeyFrame* pKFi, bool fixed_flag, bool first) {
+                if (!first) jin << ",\n";
+                Sophus::SE3f Tcw = pKFi->GetPose();
+                Eigen::Matrix3f Rcw = Tcw.rotationMatrix();
+                Eigen::Vector3f tcw = Tcw.translation();
+                jin << "    {\"id\":" << pKFi->mnId << ",\"fixed\":" << (fixed_flag?"true":"false") << ",\"bImu\":" << (pKFi->bImu?"true":"false") << ",";
+                jin << "\"Rcw\":[" << Rcw(0,0) << "," << Rcw(0,1) << "," << Rcw(0,2) << "," << Rcw(1,0) << "," << Rcw(1,1) << "," << Rcw(1,2) << "," << Rcw(2,0) << "," << Rcw(2,1) << "," << Rcw(2,2) << "],";
+                jin << "\"tcw\":[" << tcw(0) << "," << tcw(1) << "," << tcw(2) << "]";
+                if (pKFi->bImu) {
+                    auto vit = vel_before.find(pKFi->mnId);
+                    auto git = bg_before.find(pKFi->mnId);
+                    auto ait = ba_before.find(pKFi->mnId);
+                    if (vit != vel_before.end()) jin << ",\"vw\":[" << vit->second(0) << "," << vit->second(1) << "," << vit->second(2) << "]";
+                    if (git != bg_before.end()) jin << ",\"bg\":[" << git->second(0) << "," << git->second(1) << "," << git->second(2) << "]";
+                    if (ait != ba_before.end()) jin << ",\"ba\":[" << ait->second(0) << "," << ait->second(1) << "," << ait->second(2) << "]";
+                }
+                jin << "}";
+            };
+            jin << "  \"temporal_kfs\": [\n";
+            bool first = true;
+            for (int i = 0; i < N; i++) { write_kf_entry(vpOptimizableKFs[i], false, first); first = false; }
+            jin << "\n  ],\n";
+            jin << "  \"visual_kfs\": [";
+            first = true;
+            for (auto it = lpOptVisKFs.begin(); it != lpOptVisKFs.end(); ++it) { jin << (first?"\n":""); write_kf_entry(*it, false, first); first = false; }
+            jin << "\n  ],\n";
+            jin << "  \"fixed_kfs\": [";
+            first = true;
+            for (auto it = lFixedKeyFrames.begin(); it != lFixedKeyFrames.end(); ++it) { jin << (first?"\n":""); write_kf_entry(*it, true, first); first = false; }
+            jin << "\n  ],\n";
+            // imu edges (i->j, dt, sigma block diag from vei[i]->information() if available)
+            jin << "  \"imu_edges\": [";
+            first = true;
+            for (int i = 0; i < N; i++) {
+                if (vei[i] == nullptr) continue;
+                KeyFrame* pKFi = vpOptimizableKFs[i];
+                if (!pKFi->mPrevKF) continue;
+                if (!first) jin << ",";
+                first = false;
+                jin << "\n    {\"pose_i\":" << pKFi->mPrevKF->mnId << ",\"pose_j\":" << pKFi->mnId << ",\"dt\":" << pKFi->mpImuPreintegrated->dT << ",\"i_is_last\":" << ((i==N-1)?"true":"false") << "}";
+            }
+            jin << "\n  ]\n}\n";
+            jin.close();
+        }
+
+        // dx.txt — match ASIC POSE_<K>ITER format exactly
+        std::ofstream dxo(call_dir + "/dx.txt");
+        if (dxo.is_open()) {
+            dxo << "# Native g2o LocalInertialBA delta_x (FP64 cumulative, dumped as FP32 hex for ASIC parity)\n";
+            dxo << "# call_id: " << call_id << " current_kf: " << pKF->mnId << "\n";
+            dxo << "# n_temporal_kfs: " << vpOptimizableKFs.size() << " n_visual_kfs: " << lpOptVisKFs.size() << " n_fixed_kfs: " << lFixedKeyFrames.size() << "\n";
+            dxo << "# n_local_mps: " << lLocalMapPoints.size() << " opt_it: " << opt_it << "\n\n";
+            for (int K = 1; K <= opt_it; K++) {
+                dxo << "# === iter=" << K << " cumulative delta_x ===\n";
+                for (const auto& kv : iterK_pose[K]) {
+                    int pid = kv.first;
+                    auto pit = pose_before.find(pid);
+                    if (pit == pose_before.end()) continue;
+                    Eigen::Matrix3d Ri = pit->second.first.cast<double>();
+                    Eigen::Vector3d ti = pit->second.second.cast<double>();
+                    const Eigen::Matrix3d& Rk = kv.second.first;
+                    const Eigen::Vector3d& tk = kv.second.second;
+                    Eigen::Matrix3d dR = Ri.transpose() * Rk;
+                    Eigen::Vector3d dt = Ri.transpose() * (tk - ti);
+                    Eigen::Vector3d omega(
+                        (dR(2,1)-dR(1,2))/2.0,
+                        (dR(0,2)-dR(2,0))/2.0,
+                        (dR(1,0)-dR(0,1))/2.0);
+                    dxo << "POSE_" << K << "ITER " << pid;
+                    char buf[16];
+                    for (int j = 0; j < 3; j++) {
+                        float f = static_cast<float>(dt(j));
+                        uint32_t u; std::memcpy(&u, &f, 4);
+                        std::snprintf(buf, sizeof(buf), "%08X", u);
+                        dxo << " " << buf;
+                    }
+                    for (int j = 0; j < 3; j++) {
+                        float f = static_cast<float>(omega(j));
+                        uint32_t u; std::memcpy(&u, &f, 4);
+                        std::snprintf(buf, sizeof(buf), "%08X", u);
+                        dxo << " " << buf;
+                    }
+                    dxo << "  # " << dt(0) << " " << dt(1) << " " << dt(2) << " " << omega(0) << " " << omega(1) << " " << omega(2) << "\n";
+                }
+                for (const auto& kv : iterK_lm[K]) {
+                    int lid = kv.first;
+                    auto lit = landmark_before.find(lid);
+                    if (lit == landmark_before.end()) continue;
+                    Eigen::Vector3d li = lit->second.cast<double>();
+                    Eigen::Vector3d delta = kv.second - li;
+                    dxo << "LANDMARK_" << K << "ITER " << lid;
+                    char buf[16];
+                    for (int j = 0; j < 3; j++) {
+                        float f = static_cast<float>(delta(j));
+                        uint32_t u; std::memcpy(&u, &f, 4);
+                        std::snprintf(buf, sizeof(buf), "%08X", u);
+                        dxo << " " << buf;
+                    }
+                    dxo << "  # " << delta(0) << " " << delta(1) << " " << delta(2) << "\n";
+                }
+                dxo << "\n";
+            }
+            dxo.close();
+        }
+        std::cout << "[DUMP_NATIVE_LBA_DX] Inertial call_" << call_id << " -> " << call_dir << std::endl;
+    }
+    // ==== END DUMP_NATIVE_LBA_DX ====
 
     pMap->IncreaseChangeIndex();
 }

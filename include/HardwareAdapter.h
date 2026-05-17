@@ -58,6 +58,8 @@ public:
     struct LocalBAResult {
         bool success = false;
         std::map<KeyFrame*, Sophus::SE3f> pose_updates;
+        std::map<KeyFrame*, Eigen::Vector3f> velocity_updates;
+        std::map<KeyFrame*, IMU::Bias> bias_updates;
         std::map<MapPoint*, Eigen::Vector3f> landmark_updates;
     };
 

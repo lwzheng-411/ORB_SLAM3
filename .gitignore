@@ -95,3 +95,19 @@ my_settings.txt
 borrar/*
 
 */ExecMean.txt
+
+# ===== Custom backup files (kept on disk, not pushed) =====
+*.bak
+*.bak_*
+*.new
+*.orig
+*.with_env_*
+
+# ===== Custom example binaries we built (regenerate via cmake) =====
+Examples/Monocular-Inertial/mono_inertial_euroc_h*
+Examples/Monocular-Inertial/mono_inertial_hw_export
+Examples/Monocular-Inertial/mono_inertial_h*
+
+# ===== Custom timestamp files (not needed in repo) =====
+Examples/Monocular-Inertial/EuRoC_TimeStamps/V1_*.txt
+Examples/Monocular-Inertial/EuRoC_TimeStamps/V2_*.txt
