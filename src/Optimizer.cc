@@ -75,15 +75,29 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
     Map* pMap = vpKFs[0]->GetMap();
 
     // ==== ASIC/JSON 全局 BA 通路（可选） ====
+    // Global BA (all KFs/MPs, gauge-unanchored) is the WRONG problem shape for a
+    // windowed inertial ASIC solver -> route to native g2o by default. The ASIC only
+    // legitimately replaces LOCAL BA. Set CPU_QR_ASIC_GLOBAL_BA=1 to force ASIC here.
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
+    const bool asic_global_ba = std::getenv("CPU_QR_ASIC_GLOBAL_BA") != nullptr;
+    if (asic_global_ba && (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json)) {
         HardwareAdapter::LocalBAInput hw_input;
-        hw_input.local_kfs.assign(vpKFs.begin(), vpKFs.end());
-        hw_input.fixed_kfs.clear();
+        // Mirror native g2o BundleAdjustment, which hard-fixes the init KF
+        // (setFixed(mnId==GetInitKFid)) to anchor the SE3 gauge. Splitting it into
+        // fixed_kfs (instead of fixed_kfs.clear(), which left the 6 SE3 gauge DoF
+        // free -> rank-deficient fp32 QR -> divergence on the 2-view init) gives the
+        // solver a hard prior. The 7th, monocular-scale DoF is unobservable by design
+        // and resolved downstream by invMedianDepth, so it is left free here.
+        const unsigned long initKFid = pMap->GetInitKFid();
+        for (KeyFrame* kf : vpKFs) {
+            if (kf && kf->mnId == initKFid) hw_input.fixed_kfs.push_back(kf);
+            else hw_input.local_kfs.push_back(kf);
+        }
         hw_input.local_mps.assign(vpMP.begin(), vpMP.end());
         hw_input.current_kf = vpKFs.front();
         hw_input.map = pMap;
-        hw_input.inertial = pMap->IsInertial();
+        static const bool s_purevis_asic_gba = std::getenv("CPU_QR_PUREVIS_ASIC") != nullptr;
+        hw_input.inertial = pMap->IsInertial() && (!s_purevis_asic_gba || pMap->isImuInitialized());
 
         std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
         std::string dump_dir = base_dir;
@@ -94,6 +108,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
         if (hw_res.success) {
             for (const auto& kv : hw_res.pose_updates) {
                 KeyFrame* kf = kv.first;
+                if (!kf || kf->isBad()) continue;
                 const Sophus::SE3f& T = kv.second;
                 kf->SetPose(T);
             }
@@ -102,6 +117,14 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
                 if (mp && !mp->isBad()) {
                     mp->SetWorldPos(kv.second);
                     mp->UpdateNormalAndDepth();
+                }
+            }
+            // Post-optimization outlier rejection (matching g2o chi2 > 5.991)
+            if (!hw_res.outliers_to_erase.empty()) {
+                for (auto& [kf, mp] : hw_res.outliers_to_erase) {
+                    if (!kf || kf->isBad() || !mp || mp->isBad()) continue;
+                    kf->EraseMapPointMatch(mp);
+                    mp->EraseObservation(kf);
                 }
             }
             return; // 硬件成功则跳过原生 BA
@@ -1293,12 +1316,27 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
     if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
         HardwareAdapter::LocalBAInput hw_input;
-        hw_input.local_kfs = lLocalKeyFrames;
-        hw_input.fixed_kfs = lFixedCameras;
+        // g2o fixes init KF even when it's in lLocalKeyFrames (setFixed(id==initKFid)).
+        // Mirror this: move init KF from local to fixed so solver gets a hard prior.
+        const unsigned long initKFid = pMap->GetInitKFid();
+        for (KeyFrame* kf : lLocalKeyFrames) {
+            if (kf->mnId == initKFid)
+                hw_input.fixed_kfs.push_back(kf);
+            else
+                hw_input.local_kfs.push_back(kf);
+        }
+        for (KeyFrame* kf : lFixedCameras)
+            hw_input.fixed_kfs.push_back(kf);
         hw_input.local_mps = lLocalMapPoints;
         hw_input.current_kf = pKF;
         hw_input.map = pMap;
-        hw_input.inertial = pMap->IsInertial();
+        // CPU_QR_PUREVIS_ASIC: a pre-IMU-init local BA is genuinely 6-DoF visual-only
+        // (no preintegration yet) -> mark non-inertial so the exporter emits no IMU
+        // factors and the solver assembles a pure pose+landmark system (no rank-
+        // deficient vel/bg/ba columns). Default off -> inertial = IsInertial() exactly
+        // as before, so a rebuilt .so is byte-identical for the safe deliverable runs.
+        static const bool s_purevis_asic_lba = std::getenv("CPU_QR_PUREVIS_ASIC") != nullptr;
+        hw_input.inertial = pMap->IsInertial() && (!s_purevis_asic_lba || pMap->isImuInitialized());
 
         std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
         std::string dump_dir = base_dir;
@@ -1318,6 +1356,14 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 if (mp && !mp->isBad()) {
                     mp->SetWorldPos(kv.second);
                     mp->UpdateNormalAndDepth();
+                }
+            }
+            // Post-optimization outlier rejection (matching g2o chi2 > 5.991)
+            if (!hw_res.outliers_to_erase.empty()) {
+                unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+                for (auto& [kf, mp] : hw_res.outliers_to_erase) {
+                    kf->EraseMapPointMatch(mp);
+                    mp->EraseObservation(kf);
                 }
             }
             return; // 硬件求解成功则跳过原生 BA
@@ -1930,8 +1976,13 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
                                        const map<KeyFrame *, set<KeyFrame *> > &LoopConnections, const bool &bFixScale)
 {   
     // ==== ASIC/JSON Pose-only 图优化（Sim3→SE3 近似） ====
+    // Loop-closure pose-graph (Sim3->SE3) is the WRONG problem for a windowed inertial
+    // ASIC solver, AND the ASIC apply path here omits the MapPoint Sim3 correction that
+    // native g2o performs -> KFs jump while landmarks stay -> map corruption. Route to
+    // native g2o by default. Set CPU_QR_ASIC_POSEGRAPH=1 to force ASIC here.
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
+    const bool asic_posegraph = std::getenv("CPU_QR_ASIC_POSEGRAPH") != nullptr;
+    if (asic_posegraph && (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json)) {
         HardwareAdapter::LocalBAInput hw_input;
         hw_input.map = pMap;
         hw_input.inertial = pMap->IsInertial();
@@ -1979,6 +2030,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
         if (hw_res.success) {
             for (const auto& kv : hw_res.pose_updates) {
                 KeyFrame* kf = kv.first;
+                if (!kf || kf->isBad()) continue;
                 const Sophus::SE3f& T = kv.second;
                 kf->SetPose(T);
             }
@@ -2867,6 +2919,12 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 {
     Map* pCurrentMap = pKF->GetMap();
 
+    if(const char* forceLarge = std::getenv("CPU_QR_FORCE_LARGE_LBA"))
+    {
+        if(forceLarge[0] != '\0' && forceLarge[0] != '0')
+            bLarge = true;
+    }
+
     int maxOpt=10;
     int opt_it=10;
     if(bLarge)
@@ -2993,7 +3051,20 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
     // ==== ASIC/JSON 硬件通路 (LocalInertialBA) ====
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
-    if (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) {
+    // Keep the ASIC on the steady inertial Local BA workload. After loop closing / map
+    // merging ORB-SLAM3 can call LocalInertialBA with a huge fixed-KF anchor set (V1_02:
+    // fixed=57, total poses 67-82). That welding-style BA is a different workload from the
+    // ASIC's sliding-window LBA and crashed the fp32 QR takeover. Route only those oversized
+    // fixed-anchor calls to native g2o; normal steady calls (fixed<=~22 observed) remain 100%
+    // ASIC. Env CPU_QR_MAX_FIXED_KF_FOR_ASIC=0 disables the guard; default 40.
+    int maxFixedForAsic = 40;
+    if (const char* e = std::getenv("CPU_QR_MAX_FIXED_KF_FOR_ASIC")) maxFixedForAsic = std::atoi(e);
+    const bool cpuQrFixedGuard = (maxFixedForAsic > 0 && static_cast<int>(lFixedKeyFrames.size()) > maxFixedForAsic);
+    if (cpuQrFixedGuard) {
+        std::cerr << "[CPU_QR_GATE_SKIP_FIXED_KF] fixed_kfs=" << lFixedKeyFrames.size()
+                  << " > " << maxFixedForAsic << " -> native g2o LocalInertialBA\n";
+    }
+    if ((solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) && !cpuQrFixedGuard) {
         HardwareAdapter::LocalBAInput hw_input;
         // 合并 temporal 和 visual KFs 到 local_kfs
         for(KeyFrame* kf : vpOptimizableKFs) hw_input.local_kfs.push_back(kf);
@@ -3016,8 +3087,12 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         const bool cpu_qr_trace_only = trace_only_env && (std::string(trace_only_env) == "1" || std::string(trace_only_env) == "true");
 
         if (hw_res.success && !cpu_qr_trace_only) {
-             for (const auto& kv : hw_res.pose_updates) {
+            // Match native LocalInertialBA writeback semantics: commit all optimized map state
+            // under the map update mutex and notify Tracking through the map change index.
+            unique_lock<mutex> lock(pCurrentMap->mMutexMapUpdate);
+            for (const auto& kv : hw_res.pose_updates) {
                 KeyFrame* kf = kv.first;
+                if (!kf || kf->isBad()) continue;
                 const Sophus::SE3f& T = kv.second;
                 kf->SetPose(T);
             }
@@ -3027,7 +3102,20 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             }
             for (const auto& kv : hw_res.bias_updates) {
                 KeyFrame* kf = kv.first;
-                if (kf && !kf->isBad()) kf->SetNewBias(kv.second);
+                if (!kf || kf->isBad()) continue;
+                const IMU::Bias& nb = kv.second;
+                // Re-linearize the preintegration at the new bias on a large change, mirroring
+                // native FullInertialBA/VIBA (Optimizer.cc:4245). The ASIC LBA otherwise only
+                // stores the bias (SetNewBias updates bu/db but leaves dR/dV/dP and the
+                // linearization point b stale); across the per-KF stream of ASIC LBAs db=bu-b
+                // accumulates past first-order Taylor validity, so the next LBA's IMU residual
+                // explodes. Native steady-state LBA relies on VIBA to reintegrate periodically,
+                // but in the 100%-ASIC run VIBA2 never fires, so the apply path must do it.
+                const float dchg = (kf->GetGyroBias() - Eigen::Vector3f(nb.bwx, nb.bwy, nb.bwz)).norm()
+                                 + (kf->GetAccBias()  - Eigen::Vector3f(nb.bax, nb.bay, nb.baz)).norm();
+                kf->SetNewBias(nb);
+                if (dchg > 0.01f && kf->mpImuPreintegrated)
+                    kf->mpImuPreintegrated->Reintegrate();
             }
             for (const auto& kv : hw_res.landmark_updates) {
                 MapPoint* mp = kv.first;
@@ -3036,6 +3124,14 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                     mp->UpdateNormalAndDepth();
                 }
             }
+            // Post-optimization outlier rejection (matching g2o chi2 > 5.991)
+            for (auto& [kf, mp] : hw_res.outliers_to_erase) {
+                if (!kf || !mp) continue;
+                kf->EraseMapPointMatch(mp);
+                mp->EraseObservation(kf);
+            }
+            pCurrentMap->IncreaseChangeIndex();
+            lock.unlock();
             // Flush input JSON to lba_kf_<id>/ for ASIC RTL replay
             FlushPendingJson();
             return;
