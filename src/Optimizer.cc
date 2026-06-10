@@ -3074,7 +3074,8 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         hw_input.local_mps.assign(lLocalMapPoints.begin(), lLocalMapPoints.end());
         hw_input.current_kf = pKF;
         hw_input.map = pCurrentMap;
-        hw_input.inertial = true; 
+        hw_input.inertial = true;
+        hw_input.large = bLarge;
 
         std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
         std::string dump_dir = base_dir;

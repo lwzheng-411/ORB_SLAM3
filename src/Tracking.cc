@@ -30,6 +30,7 @@
 #include "GeometricTools.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 
@@ -2248,10 +2249,27 @@ void Tracking::Track()
             if (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD)
             {
                 Verbose::PrintMess("Track lost for less than one second...", Verbose::VERBOSITY_NORMAL);
-                if(!pCurrentMap->isImuInitialized() || !pCurrentMap->GetIniertialBA2())
+                const bool bCpuQrCoastPreBA2 = std::getenv("CPU_QR_COAST_PRE_BA2") &&
+                                               std::getenv("CPU_QR_COAST_PRE_BA2")[0] != '0';
+                const bool bCpuQrCoastPreImuInit = std::getenv("CPU_QR_COAST_PRE_IMU_INIT") &&
+                                                   std::getenv("CPU_QR_COAST_PRE_IMU_INIT")[0] != '0';
+                if(!pCurrentMap->isImuInitialized() && bCpuQrCoastPreImuInit)
+                {
+                    // Keep the strict CPU-QR/ASIC takeover map alive through early inertial bootstrap;
+                    // LocalInertialBA still goes through the ASIC route when it is called.
+                    cout << "IMU is not initialized yet. CPU_QR_COAST_PRE_IMU_INIT keeps active map alive." << endl;
+                }
+                else if(!pCurrentMap->isImuInitialized() || (!pCurrentMap->GetIniertialBA2() && !bCpuQrCoastPreBA2))
                 {
                     cout << "IMU is not or recently initialized. Reseting active map..." << endl;
                     mpSystem->ResetActiveMap();
+                }
+                else if(!pCurrentMap->GetIniertialBA2() && bCpuQrCoastPreBA2)
+                {
+                    // Keep the already-IMU-initialized map alive through a short pre-BA2 tracking loss.
+                    // This is only enabled for the ASIC all-takeover path; the Local BA solver still
+                    // remains 100% ASIC (no native-g2o fallback), but VIBA2 gets a chance to run.
+                    cout << "IMU initialized but BA2 is pending. CPU_QR_COAST_PRE_BA2 keeps active map alive." << endl;
                 }
 
                 mState=RECENTLY_LOST;

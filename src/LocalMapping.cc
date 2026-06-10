@@ -26,6 +26,7 @@
 
 #include<mutex>
 #include<chrono>
+#include<cstdlib>
 
 namespace ORB_SLAM3
 {
@@ -137,11 +138,22 @@ void LocalMapping::Run()
                         {
                             if((mTinit<10.f) && (dist<0.02))
                             {
-                                cout << "Not enough motion for initializing. Reseting..." << endl;
-                                unique_lock<mutex> lock(mMutexReset);
-                                mbResetRequestedActiveMap = true;
-                                mpMapToReset = mpCurrentKeyFrame->GetMap();
-                                mbBadImu = true;
+                                const bool bCpuQrCoastPreBA2 = std::getenv("CPU_QR_COAST_PRE_BA2") &&
+                                                               std::getenv("CPU_QR_COAST_PRE_BA2")[0] != '0';
+                                if(bCpuQrCoastPreBA2)
+                                {
+                                    // Keep the strict CPU-QR/ASIC takeover map alive until VIBA2 can run;
+                                    // the LocalInertialBA call below still goes through the ASIC path.
+                                    cout << "CPU_QR_COAST_PRE_BA2 suppresses pre-BA2 bad-IMU reset." << endl;
+                                }
+                                else
+                                {
+                                    cout << "Not enough motion for initializing. Reseting..." << endl;
+                                    unique_lock<mutex> lock(mMutexReset);
+                                    mbResetRequestedActiveMap = true;
+                                    mpMapToReset = mpCurrentKeyFrame->GetMap();
+                                    mbBadImu = true;
+                                }
                             }
                         }
 

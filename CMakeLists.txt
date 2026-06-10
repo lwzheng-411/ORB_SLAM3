@@ -206,6 +206,22 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lgtsam -ltbb
 )
 
+# purevis: same slot caps as h15_f120_o8, separate artifact so the running
+# PREINIT-to-g2o deliverable .so is never touched. Pure-visual ASIC full
+# takeover is opt-in at runtime via CPU_QR_PUREVIS_ASIC=1.
+add_library(${PROJECT_NAME}_h15_f120_o8_purevis SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_f120_o8_purevis PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=120 ASIC_OBS_PER_LANDMARK_CAP=8)
+target_link_libraries(${PROJECT_NAME}_h15_f120_o8_purevis
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
 add_library(${PROJECT_NAME}_h15_f100_o6 SHARED ${ORB_SLAM3_SOURCES})
 target_compile_definitions(${PROJECT_NAME}_h15_f100_o6 PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=100 ASIC_OBS_PER_LANDMARK_CAP=6)
 target_link_libraries(${PROJECT_NAME}_h15_f100_o6
@@ -415,6 +431,10 @@ target_link_libraries(mono_inertial_euroc_h15_f160_o10 ${PROJECT_NAME}_h15_f160_
 add_executable(mono_inertial_euroc_h15_f120_o8
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc_h15_f120_o8 ${PROJECT_NAME}_h15_f120_o8)
+
+add_executable(mono_inertial_euroc_h15_f120_o8_purevis
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_f120_o8_purevis ${PROJECT_NAME}_h15_f120_o8_purevis)
 
 add_executable(mono_inertial_euroc_h15_f100_o6
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)

@@ -43,6 +43,7 @@ public:
         KeyFrame* current_kf = nullptr;
         Map* map = nullptr;
         bool inertial = false;
+        bool large = false;       // Native LocalInertialBA bLarge; disables divergence early-return.
         bool pose_only = false;   // true: 仅位姿图（Sim3/SE3），不含路标
         bool fix_scale = true;    // 对应 Sim3 固定尺度时置 true；单目回环可置 false 近似转 SE3
         struct PoseEdge {
@@ -61,6 +62,9 @@ public:
         std::map<KeyFrame*, Eigen::Vector3f> velocity_updates;
         std::map<KeyFrame*, IMU::Bias> bias_updates;
         std::map<MapPoint*, Eigen::Vector3f> landmark_updates;
+        // Post-optimization outlier pairs: chi2 > 5.991 after applying ASIC delta.
+        // Caller should EraseMapPointMatch + EraseObservation under map mutex.
+        std::vector<std::pair<KeyFrame*, MapPoint*>> outliers_to_erase;
     };
 
     static LocalBAResult RunLocalBA(const LocalBAInput& input,

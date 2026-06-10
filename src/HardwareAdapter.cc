@@ -393,7 +393,8 @@ bool RunCpuQrSolver(const std::string& json_dir,
                     const SolverSwitch& sw,
                     const std::string& output_path,
                     const std::string& log_path,
-                    bool ba2_done_for_solver) {
+                    bool ba2_done_for_solver,
+                    bool b_large_for_solver) {
     // CPU QR solver invocation.
     // Default behavior (interleaved binary): minimal flags <json_dir> --output --huber --max-trails [--n-iter]
     // Legacy measure_cpu_qr binary: set CPU_QR_LEGACY_FLAGS=1 to also pass --online --tsqr --col-phase.
@@ -423,6 +424,9 @@ bool RunCpuQrSolver(const std::string& json_dir,
     // argument instead of an environment variable so persistent solver mode sees
     // the current call's BA stage rather than the server process startup state.
     extra_args.push_back(std::string("--ba2-done=") + (ba2_done_for_solver ? "1" : "0"));
+    // Native LocalInertialBA only rejects divergent whole-calls when !bLarge.
+    // Pass bLarge per call so persistent solver mode sees the current value.
+    extra_args.push_back(std::string("--b-large=") + (b_large_for_solver ? "1" : "0"));
     // Optional: arbitrary extra args appended verbatim (space-separated).
     // Used by persistent-solver mode to replace shell wrapper scripts.
     const char* extra_env = std::getenv("CPU_QR_EXTRA_ARGS");
@@ -908,6 +912,7 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
         std::string log_path = scratch_dir + "/measure_cpu_qr.log";
         const bool verbose_calls = CpuQrVerboseCalls();
         const bool ba2_done_for_solver = input.map && input.map->GetIniertialBA2();
+        const bool b_large_for_solver = input.large;
         if (verbose_calls) {
             std::cerr << "[CPU_QR_CALL_BEGIN] seq=" << seq_num
                       << " current_kf=" << input.current_kf->mnId
@@ -924,7 +929,7 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
             return cpu_qr_zero_update();
         }
 
-        if (!RunCpuQrSolver(scratch_dir, sw, output_path, log_path, ba2_done_for_solver)) {
+        if (!RunCpuQrSolver(scratch_dir, sw, output_path, log_path, ba2_done_for_solver, b_large_for_solver)) {
             std::cerr << "[CPU_QR] solver failed, log: " << log_path << std::endl;
             return cpu_qr_zero_update();
         }
@@ -932,6 +937,23 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
         // 保存本次 delta 副本（防止被下次覆盖）
         try { fs::copy_file(output_path, delta_archive, fs::copy_options::overwrite_existing); }
         catch (...) {}
+
+        // Solver-side whole-call divergence reject (native LocalInertialBA parity:
+        // (2*err < err_end || nan) -> return without writeback). Honour it as a clean
+        // zero update: no pose/vel/bias/landmark apply, no outlier erase, no g2o.
+        {
+            std::ifstream rin(output_path);
+            std::string rline;
+            while (std::getline(rin, rline)) {
+                if (rline.empty() || rline[0] == '#') continue;
+                if (rline.rfind("CALL_REJECT", 0) == 0) {
+                    std::cerr << "[CPU_QR_CALL_REJECT] seq=" << seq_num
+                              << " solver diverge-reject -> zero update (" << rline << ")" << std::endl;
+                    return cpu_qr_zero_update();
+                }
+                break;  // first non-comment line is a normal record
+            }
+        }
 
         std::map<int, Eigen::Matrix<float, 6, 1>> pose_deltas;
         std::map<int, Eigen::Vector3f> landmark_deltas;
@@ -1453,7 +1475,11 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
                 float sigma2 = obs.sigma_pixel * obs.sigma_pixel;
                 if (sigma2 < 1e-12f) sigma2 = 1.0f;
                 float chi2 = err.squaredNorm() / sigma2;
-                if (chi2 > chi2_mono_threshold) {
+                // Native parity (Optimizer.cc LocalInertialBA): close points
+                // (mTrackDepth < 10) use a 1.5x relaxed chi2 threshold before erase.
+                const bool bClose = mp->mTrackDepth < 10.f;
+                if ((chi2 > chi2_mono_threshold && !bClose) ||
+                    (chi2 > 1.5f * chi2_mono_threshold && bClose)) {
                     result.outliers_to_erase.emplace_back(kf, mp);
                 }
             }
@@ -1630,6 +1656,7 @@ void HardwareAdapter::FillExporter(const LocalBAInput& input,
             const float unc2 = kf->mpCamera->uncertainty2(obs2d);
             const float invSigma2 = kf->mvInvLevelSigma2[kp.octave] / unc2;
             oi.sigma_pixel = 1.0f / std::sqrt(invSigma2);
+            oi.track_depth = mp->mTrackDepth;
 
             exporter.addObservation(oi);
         }
