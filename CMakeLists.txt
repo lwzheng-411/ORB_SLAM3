@@ -151,6 +151,22 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lgtsam -ltbb
 )
 
+# Unpruned native-FP32 baseline. This uses the same INT_MAX defaults as the
+# baseline library and changes only the g2o scalar type. Keep it separate from
+# the h15/f120/o8 target so full-graph accuracy is not mixed with pruning.
+add_library(${PROJECT_NAME}_g2ofp32 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_g2ofp32 PRIVATE G2O_SCALAR_FLOAT)
+target_link_libraries(${PROJECT_NAME}_g2ofp32
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o_fp32.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
 # cap15_200 library: horizon=15, landmark=200
 add_library(${PROJECT_NAME}_cap15_200 SHARED ${ORB_SLAM3_SOURCES})
 target_compile_definitions(${PROJECT_NAME}_cap15_200 PRIVATE HORIZON_CAP=15 LANDMARK_CAP=200)
@@ -201,6 +217,24 @@ ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+-lboost_serialization
+-lcrypto
+-lgtsam -ltbb
+)
+
+# g2ofp32: same slot caps as h15_f120_o8 but the whole g2o solve pipeline
+# (residual/Jacobian/Hessian/linear solve/LM loop) runs in fp32 via
+# G2O_SCALAR_FLOAT + libg2o_fp32.so. Map state stays double; this is the
+# native-FP32 ATE baseline column, separate artifact so libg2o.so builds
+# are never touched.
+add_library(${PROJECT_NAME}_h15_f120_o8_g2ofp32 SHARED ${ORB_SLAM3_SOURCES})
+target_compile_definitions(${PROJECT_NAME}_h15_f120_o8_g2ofp32 PRIVATE HORIZON_CAP=15 ASIC_FEATURES_PER_KF_CAP=120 ASIC_OBS_PER_LANDMARK_CAP=8 G2O_SCALAR_FLOAT)
+target_link_libraries(${PROJECT_NAME}_h15_f120_o8_g2ofp32
+${OpenCV_LIBS}
+${EIGEN3_LIBS}
+${Pangolin_LIBRARIES}
+${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
+${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o_fp32.so
 -lboost_serialization
 -lcrypto
 -lgtsam -ltbb
@@ -416,6 +450,10 @@ add_executable(mono_inertial_euroc_baseline
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc_baseline ${PROJECT_NAME})
 
+add_executable(mono_inertial_euroc_g2ofp32
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_g2ofp32 ${PROJECT_NAME}_g2ofp32)
+
 add_executable(mono_inertial_euroc_cap15_200
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc_cap15_200 ${PROJECT_NAME}_cap15_200)
@@ -435,6 +473,10 @@ target_link_libraries(mono_inertial_euroc_h15_f120_o8 ${PROJECT_NAME}_h15_f120_o
 add_executable(mono_inertial_euroc_h15_f120_o8_purevis
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
 target_link_libraries(mono_inertial_euroc_h15_f120_o8_purevis ${PROJECT_NAME}_h15_f120_o8_purevis)
+
+add_executable(mono_inertial_euroc_h15_f120_o8_g2ofp32
+        Examples/Monocular-Inertial/mono_inertial_euroc.cc)
+target_link_libraries(mono_inertial_euroc_h15_f120_o8_g2ofp32 ${PROJECT_NAME}_h15_f120_o8_g2ofp32)
 
 add_executable(mono_inertial_euroc_h15_f100_o6
         Examples/Monocular-Inertial/mono_inertial_euroc.cc)
@@ -468,6 +510,10 @@ target_link_libraries(mono_inertial_euroc_hINF_lm150 ${PROJECT_NAME}_hINF_lm150)
 add_executable(mono_inertial_hw_export
         Examples/Monocular-Inertial/mono_inertial_hw_export.cc)
 target_link_libraries(mono_inertial_hw_export ${PROJECT_NAME})
+
+add_executable(g2o_replay_timing_hpc_ategood
+        Examples/Monocular-Inertial/g2o_replay_timing_hpc_ategood.cc)
+target_link_libraries(g2o_replay_timing_hpc_ategood ${PROJECT_NAME})
 
 add_executable(mono_inertial_tum_vi
         Examples/Monocular-Inertial/mono_inertial_tum_vi.cc)

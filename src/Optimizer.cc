@@ -47,6 +47,9 @@
 #include<iomanip>
 #include<cstdlib>
 #include<string>
+#include<chrono>
+#include<algorithm>
+#include<set>
 
 #include "OptimizableTypes.h"
 
@@ -56,6 +59,135 @@ namespace ORB_SLAM3
 bool sortByVal(const pair<MapPoint*, int> &a, const pair<MapPoint*, int> &b)
 {
     return (a.second < b.second);
+}
+
+static std::set<MapPoint*> NativeTopCountLandmarks(const std::map<MapPoint*, int>& counts, int maxLandmarks)
+{
+    std::vector<std::pair<int, MapPoint*>> ranked;
+    ranked.reserve(counts.size());
+    for(const auto& kv : counts) ranked.emplace_back(kv.second, kv.first);
+    std::sort(ranked.begin(), ranked.end(),
+              [](const std::pair<int, MapPoint*>& a, const std::pair<int, MapPoint*>& b) {
+                  if(a.first != b.first) return a.first > b.first;
+                  return a.second->mnId < b.second->mnId;
+              });
+    std::set<MapPoint*> keep;
+    for(int i = 0; i < maxLandmarks && i < static_cast<int>(ranked.size()); ++i)
+        keep.insert(ranked[static_cast<std::size_t>(i)].second);
+    return keep;
+}
+
+static std::set<MapPoint*> NativeTopCountRepairLandmarks(
+    const std::map<MapPoint*, int>& counts,
+    const std::map<unsigned long, std::set<MapPoint*>>& poseLandmarks,
+    const std::map<MapPoint*, std::set<unsigned long>>& lmPoses,
+    int maxLandmarks,
+    int repairMinPerPose)
+{
+    if(repairMinPerPose <= 0) return NativeTopCountLandmarks(counts, maxLandmarks);
+
+    std::set<MapPoint*> keep = NativeTopCountLandmarks(counts, maxLandmarks);
+    std::map<unsigned long, int> covered;
+    auto rebuildCoverage = [&]() {
+        covered.clear();
+        for(const auto& pkv : poseLandmarks) {
+            int c = 0;
+            for(MapPoint* mp : pkv.second) {
+                if(keep.count(mp)) ++c;
+            }
+            covered[pkv.first] = c;
+        }
+    };
+    rebuildCoverage();
+
+    for(const auto& pkv : poseLandmarks) {
+        const unsigned long poseId = pkv.first;
+        const int need = std::min(repairMinPerPose, static_cast<int>(pkv.second.size()));
+        int guard = 0;
+        while(covered[poseId] < need && guard++ < need) {
+            MapPoint* addMp = nullptr;
+            int addCount = -1;
+            for(MapPoint* mp : pkv.second) {
+                if(keep.count(mp)) continue;
+                const int c = counts.at(mp);
+                if(c > addCount || (c == addCount && (!addMp || mp->mnId < addMp->mnId))) {
+                    addCount = c;
+                    addMp = mp;
+                }
+            }
+            if(!addMp) break;
+
+            MapPoint* dropMp = nullptr;
+            int dropLoss = INT_MAX;
+            int dropCount = INT_MAX;
+            for(MapPoint* mp : keep) {
+                if(pkv.second.count(mp)) continue;
+                int loss = 0;
+                const auto lit = lmPoses.find(mp);
+                if(lit != lmPoses.end()) {
+                    for(unsigned long p : lit->second) {
+                        const int pNeed = std::min(repairMinPerPose, static_cast<int>(poseLandmarks.at(p).size()));
+                        if(covered[p] <= pNeed) ++loss;
+                    }
+                }
+                const int c = counts.at(mp);
+                if(loss < dropLoss || (loss == dropLoss && (c < dropCount || (c == dropCount && (!dropMp || mp->mnId > dropMp->mnId))))) {
+                    dropLoss = loss;
+                    dropCount = c;
+                    dropMp = mp;
+                }
+            }
+            if(!dropMp) break;
+            keep.erase(dropMp);
+            keep.insert(addMp);
+            rebuildCoverage();
+        }
+    }
+    return keep;
+}
+
+static void ApplyNativeMaxLandmarks(std::list<MapPoint*>& localMapPoints,
+                                    const std::set<KeyFrame*>& graphKFs,
+                                    const std::set<unsigned long>& fixedKFIds,
+                                    bool dropFixedObservations,
+                                    int maxLandmarks,
+                                    int repairMinPerPose,
+                                    Map* currentMap,
+                                    const char* label)
+{
+    if(maxLandmarks <= 0 || static_cast<int>(localMapPoints.size()) <= maxLandmarks) return;
+
+    std::map<MapPoint*, int> counts;
+    std::map<unsigned long, std::set<MapPoint*>> poseLandmarks;
+    std::map<MapPoint*, std::set<unsigned long>> lmPoses;
+    for(MapPoint* mp : localMapPoints) {
+        if(!mp || mp->isBad()) continue;
+        const map<KeyFrame*,tuple<int,int>> observations = mp->GetObservations();
+        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++) {
+            KeyFrame* kf = mit->first;
+            if(!kf || kf->isBad() || kf->GetMap() != currentMap) continue;
+            if(graphKFs.find(kf) == graphKFs.end()) continue;
+            if(dropFixedObservations && fixedKFIds.count(kf->mnId)) continue;
+            const int leftIndex = get<0>(mit->second);
+            if(leftIndex < 0 || leftIndex >= static_cast<int>(kf->mvKeysUn.size())) continue;
+            counts[mp]++;
+            poseLandmarks[kf->mnId].insert(mp);
+            lmPoses[mp].insert(kf->mnId);
+        }
+    }
+    if(static_cast<int>(counts.size()) <= maxLandmarks) return;
+
+    const std::set<MapPoint*> keep = NativeTopCountRepairLandmarks(counts, poseLandmarks, lmPoses, maxLandmarks, repairMinPerPose);
+    const std::size_t before = localMapPoints.size();
+    localMapPoints.remove_if([&](MapPoint* mp) {
+        if(keep.find(mp) != keep.end()) return false;
+        if(mp) mp->mnBALocalForKF = 0;
+        return true;
+    });
+    std::cerr << "[" << label << "] max_landmarks=" << maxLandmarks
+              << " repair_min_per_pose=" << repairMinPerPose
+              << " before=" << before
+              << " after=" << localMapPoints.size() << std::endl;
 }
 
 void Optimizer::GlobalBundleAdjustemnt(Map* pMap, int nIterations, bool* pbStopFlag, const unsigned long nLoopKF, const bool bRobust)
@@ -187,7 +319,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
             continue;
         g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
         Sophus::SE3<float> Tcw = pKF->GetPose();
-        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(),Tcw.translation().cast<double>()));
+        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>()));
         vSE3->setId(pKF->mnId);
         vSE3->setFixed(pKF->mnId==pMap->GetInitKFid());
         optimizer.addVertex(vSE3);
@@ -205,7 +337,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
         if(pMP->isBad())
             continue;
         g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
-        vPoint->setEstimate(pMP->GetWorldPos().cast<double>());
+        vPoint->setEstimate(pMP->GetWorldPos().cast<g2o::number_t>());
         const int id = pMP->mnId+maxKFid+1;
         vPoint->setId(id);
         vPoint->setMarginalized(true);
@@ -239,7 +371,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
                 e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mnId)));
                 e->setMeasurement(obs);
                 const float &invSigma2 = pKF->mvInvLevelSigma2[kpUn.octave];
-                e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                 if(bRobust)
                 {
@@ -268,10 +400,10 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
 
                 e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(id)));
                 e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mnId)));
-                e->setMeasurement(obs);
+                e->setMeasurement(obs.cast<g2o::number_t>());
                 const float &invSigma2 = pKF->mvInvLevelSigma2[kpUn.octave];
                 Eigen::Matrix3d Info = Eigen::Matrix3d::Identity()*invSigma2;
-                e->setInformation(Info);
+                e->setInformation(Info.cast<g2o::number_t>());
 
                 if(bRobust)
                 {
@@ -309,14 +441,14 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mnId)));
                     e->setMeasurement(obs);
                     const float &invSigma2 = pKF->mvInvLevelSigma2[kp.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
                     rk->setDelta(thHuber2D);
 
                     Sophus::SE3f Trl = pKF-> GetRelativePoseTrl();
-                    e->mTrl = g2o::SE3Quat(Trl.unit_quaternion().cast<double>(), Trl.translation().cast<double>());
+                    e->mTrl = g2o::SE3Quat(Trl.unit_quaternion().cast<g2o::number_t>(), Trl.translation().cast<g2o::number_t>());
 
                     e->pCamera = pKF->mpCamera2;
 
@@ -363,7 +495,7 @@ void Optimizer::BundleAdjustment(const vector<KeyFrame *> &vpKFs, const vector<M
         }
         else
         {
-            pKF->mTcwGBA = Sophus::SE3d(SE3quat.rotation(),SE3quat.translation()).cast<float>();
+            pKF->mTcwGBA = Sophus::SE3d(SE3quat.rotation().cast<double>(),SE3quat.translation().cast<double>()).cast<float>();
             pKF->mnBAGlobalForKF = nLoopKF;
 
             Sophus::SE3f mTwc = pKF->GetPoseInverse();
@@ -616,7 +748,7 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                     egr->setVertex(0,VG1);
                     egr->setVertex(1,VG2);
                     Eigen::Matrix3d InfoG = pKFi->mpImuPreintegrated->C.block<3,3>(9,9).cast<double>().inverse();
-                    egr->setInformation(InfoG);
+                    egr->setInformation(InfoG.cast<g2o::number_t>());
                     egr->computeError();
                     optimizer.addEdge(egr);
 
@@ -624,7 +756,7 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                     ear->setVertex(0,VA1);
                     ear->setVertex(1,VA2);
                     Eigen::Matrix3d InfoA = pKFi->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
-                    ear->setInformation(InfoA);
+                    ear->setInformation(InfoA.cast<g2o::number_t>());
                     ear->computeError();
                     optimizer.addEdge(ear);
                 }
@@ -646,13 +778,13 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
         EdgePriorAcc* epa = new EdgePriorAcc(bprior);
         epa->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VA));
         double infoPriorA = priorA; //
-        epa->setInformation(infoPriorA*Eigen::Matrix3d::Identity());
+        epa->setInformation((infoPriorA*Eigen::Matrix3d::Identity()).cast<g2o::number_t>());
         optimizer.addEdge(epa);
 
         EdgePriorGyro* epg = new EdgePriorGyro(bprior);
         epg->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VG));
         double infoPriorG = priorG; //
-        epg->setInformation(infoPriorG*Eigen::Matrix3d::Identity());
+        epg->setInformation((infoPriorG*Eigen::Matrix3d::Identity()).cast<g2o::number_t>());
         optimizer.addEdge(epg);
     }
 
@@ -667,7 +799,7 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
     {
         MapPoint* pMP = vpMPs[i];
         g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
-        vPoint->setEstimate(pMP->GetWorldPos().cast<double>());
+        vPoint->setEstimate(pMP->GetWorldPos().cast<g2o::number_t>());
         unsigned long id = pMP->mnId+iniMPid+1;
         vPoint->setId(id);
         vPoint->setMarginalized(true);
@@ -709,7 +841,7 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                     e->setMeasurement(obs);
                     const float invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
 
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -736,7 +868,7 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                     e->setMeasurement(obs);
                     const float invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
 
-                    e->setInformation(Eigen::Matrix3d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix3d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -766,7 +898,7 @@ void Optimizer::FullInertialBA(Map *pMap, int its, const bool bFixLocal, const l
                         e->setVertex(1, VP);
                         e->setMeasurement(obs);
                         const float invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                        e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                        e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                         g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                         e->setRobustKernel(rk);
@@ -890,7 +1022,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     // Set Frame vertex
     g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
     Sophus::SE3<float> Tcw = pFrame->GetPose();
-    vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(),Tcw.translation().cast<double>()));
+    vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>()));
     vSE3->setId(0);
     vSE3->setFixed(false);
     optimizer.addVertex(vSE3);
@@ -939,7 +1071,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
                     e->setMeasurement(obs);
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -966,10 +1098,10 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     g2o::EdgeStereoSE3ProjectXYZOnlyPose* e = new g2o::EdgeStereoSE3ProjectXYZOnlyPose();
 
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
-                    e->setMeasurement(obs);
+                    e->setMeasurement(obs.cast<g2o::number_t>());
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
                     Eigen::Matrix3d Info = Eigen::Matrix3d::Identity()*invSigma2;
-                    e->setInformation(Info);
+                    e->setInformation(Info.cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -980,7 +1112,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->cx = pFrame->cx;
                     e->cy = pFrame->cy;
                     e->bf = pFrame->mbf;
-                    e->Xw = pMP->GetWorldPos().cast<double>();
+                    e->Xw = pMP->GetWorldPos().cast<g2o::number_t>();
 
                     optimizer.addEdge(e);
 
@@ -1007,7 +1139,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
                     e->setMeasurement(obs);
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity() * invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity() * invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -1034,7 +1166,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
                     e->setMeasurement(obs);
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity() * invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity() * invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -1043,7 +1175,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     e->pCamera = pFrame->mpCamera2;
                     e->Xw = pMP->GetWorldPos().cast<double>();
 
-                    e->mTrl = g2o::SE3Quat(pFrame->GetRelativePoseTrl().unit_quaternion().cast<double>(), pFrame->GetRelativePoseTrl().translation().cast<double>());
+                    e->mTrl = g2o::SE3Quat(pFrame->GetRelativePoseTrl().unit_quaternion().cast<g2o::number_t>(), pFrame->GetRelativePoseTrl().translation().cast<g2o::number_t>());
 
                     optimizer.addEdge(e);
 
@@ -1068,7 +1200,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     for(size_t it=0; it<4; it++)
     {
         Tcw = pFrame->GetPose();
-        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(),Tcw.translation().cast<double>()));
+        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>()));
 
         optimizer.initializeOptimization(0);
         optimizer.optimize(its[it]);
@@ -1183,6 +1315,12 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 #ifndef LANDMARK_CAP
 #define LANDMARK_CAP INT_MAX
 #endif
+#ifndef ASIC_FEATURES_PER_KF_CAP
+#define ASIC_FEATURES_PER_KF_CAP INT_MAX
+#endif
+#ifndef ASIC_OBS_PER_LANDMARK_CAP
+#define ASIC_OBS_PER_LANDMARK_CAP INT_MAX
+#endif
 
 void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges)
 {
@@ -1269,23 +1407,6 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         }
     }
 
-    // Landmark cap: keep top LANDMARK_CAP by observation count.
-    if ((int)lLocalMapPoints.size() > LANDMARK_CAP)
-    {
-        std::vector<std::pair<int, MapPoint*>> ranked;
-        ranked.reserve(lLocalMapPoints.size());
-        for (MapPoint* pMP : lLocalMapPoints)
-            ranked.emplace_back(pMP->Observations(), pMP);
-        std::sort(ranked.begin(), ranked.end(),
-                  [](const std::pair<int, MapPoint*>& a,
-                     const std::pair<int, MapPoint*>& b) {
-                      return a.first > b.first;
-                  });
-        lLocalMapPoints.clear();
-        for (std::size_t i = 0; i < (std::size_t)LANDMARK_CAP && i < ranked.size(); ++i)
-            lLocalMapPoints.push_back(ranked[i].second);
-    }
-
     // Fixed Keyframes. Keyframes that see Local MapPoints but that are not Local Keyframes
     list<KeyFrame*> lFixedCameras;
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
@@ -1304,6 +1425,19 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         }
     }
     num_fixedKF = lFixedCameras.size() + num_fixedKF;
+
+    int nativeMaxLandmarks = LANDMARK_CAP;
+    if (const char* e = std::getenv("CPU_QR_NATIVE_MAX_LANDMARKS")) nativeMaxLandmarks = std::atoi(e);
+    int nativeRepairMinPerPose = 0;
+    if (const char* e = std::getenv("CPU_QR_NATIVE_MAX_LANDMARKS_REPAIR_MIN_PER_POSE")) nativeRepairMinPerPose = std::atoi(e);
+    const bool nativeDropFixedObservations = std::getenv("CPU_QR_NATIVE_DROP_FIXED_OBS") != nullptr;
+    std::set<KeyFrame*> nativeGraphKFs(lLocalKeyFrames.begin(), lLocalKeyFrames.end());
+    for(KeyFrame* kf : lFixedCameras) if(kf) nativeGraphKFs.insert(kf);
+    std::set<unsigned long> nativeFixedKFIds;
+    for(KeyFrame* kf : lFixedCameras) if(kf) nativeFixedKFIds.insert(kf->mnId);
+    ApplyNativeMaxLandmarks(lLocalMapPoints, nativeGraphKFs, nativeFixedKFIds,
+                            nativeDropFixedObservations, nativeMaxLandmarks, nativeRepairMinPerPose,
+                            pCurrentMap, "NATIVE_LBA_PRUNE_VISUAL");
 
 
     if(num_fixedKF == 0)
@@ -1401,7 +1535,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         KeyFrame* pKFi = *lit;
         g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
         Sophus::SE3<float> Tcw = pKFi->GetPose();
-        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(), Tcw.translation().cast<double>()));
+        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(), Tcw.translation().cast<g2o::number_t>()));
         vSE3->setId(pKFi->mnId);
         vSE3->setFixed(pKFi->mnId==pMap->GetInitKFid());
         optimizer.addVertex(vSE3);
@@ -1418,7 +1552,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         KeyFrame* pKFi = *lit;
         g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
         Sophus::SE3<float> Tcw = pKFi->GetPose();
-        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(),Tcw.translation().cast<double>()));
+        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>()));
         vSE3->setId(pKFi->mnId);
         vSE3->setFixed(true);
         optimizer.addVertex(vSE3);
@@ -1461,6 +1595,118 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     const float thHuberMono = sqrt(5.991);
     const float thHuberStereo = sqrt(7.815);
 
+    const bool nativeMatchExporterObs = std::getenv("CPU_QR_NATIVE_MATCH_EXPORTER_OBS") != nullptr;
+    std::set<std::pair<MapPoint*, KeyFrame*>> nativeExporterAllowedObs;
+    std::set<MapPoint*> nativeExporterAllowedMps;
+    if (nativeMatchExporterObs) {
+        struct CandidateObservation {
+            MapPoint* mp = nullptr;
+            KeyFrame* kf = nullptr;
+            int idx = -1;
+            int local_track = 0;
+            int local_hits = 0;
+            int fixed_hits = 0;
+            int score = 0;
+        };
+        std::set<KeyFrame*> local_set;
+        std::set<KeyFrame*> fixed_set;
+        const unsigned long initKFid = pMap->GetInitKFid();
+        for (KeyFrame* kf : lLocalKeyFrames) {
+            if (kf->mnId == initKFid) fixed_set.insert(kf);
+            else local_set.insert(kf);
+        }
+        for (KeyFrame* kf : lFixedCameras) fixed_set.insert(kf);
+        const bool drop_fixed_observations = std::getenv("CPU_QR_NATIVE_DROP_FIXED_OBS") != nullptr;
+        std::vector<CandidateObservation> candidates;
+        for (MapPoint* mp : lLocalMapPoints) {
+            if (!mp || mp->isBad()) continue;
+            const auto observations = mp->GetObservations();
+            std::vector<CandidateObservation> mp_obs;
+            int local_hits = 0;
+            int fixed_hits = 0;
+            for (const auto& kv : observations) {
+                KeyFrame* kf = kv.first;
+                if (!kf || kf->isBad()) continue;
+                const bool is_local = local_set.find(kf) != local_set.end();
+                const bool is_fixed = fixed_set.find(kf) != fixed_set.end();
+                if (!is_local && !is_fixed) continue;
+                if (drop_fixed_observations && is_fixed) continue;
+                const int idx = std::get<0>(kv.second);
+                if (idx < 0 || idx >= static_cast<int>(kf->mvKeysUn.size())) continue;
+                if (is_local) ++local_hits;
+                if (is_fixed) ++fixed_hits;
+                CandidateObservation co;
+                co.mp = mp;
+                co.kf = kf;
+                co.idx = idx;
+                mp_obs.push_back(co);
+            }
+            if (local_hits == 0 || mp_obs.empty()) continue;
+            const int track = static_cast<int>(mp_obs.size());
+            const bool pre_imu_bootstrap = pMap && !pMap->isImuInitialized();
+            const bool uncap_obs_always = std::getenv("CPU_QR_UNCAP_OBS_ALWAYS") != nullptr;
+            const bool post_ba2_uncap_obs = std::getenv("CPU_QR_UNCAP_OBS_AFTER_BA2") != nullptr && pMap && pMap->GetIniertialBA2();
+            const int obs_cap = (uncap_obs_always || pre_imu_bootstrap || post_ba2_uncap_obs) ? 2147483647 : ASIC_OBS_PER_LANDMARK_CAP;
+            const int obs_keep = std::min(track, obs_cap);
+            std::sort(mp_obs.begin(), mp_obs.end(),
+                      [pKF](const CandidateObservation& a, const CandidateObservation& b) {
+                          const bool ac = (a.kf == pKF);
+                          const bool bc = (b.kf == pKF);
+                          if (ac != bc) return ac;
+                          return a.kf->mnId > b.kf->mnId;
+                      });
+            for (int i = 0; i < obs_keep; ++i) {
+                CandidateObservation co = mp_obs[static_cast<std::size_t>(i)];
+                co.local_track = track;
+                co.local_hits = local_hits;
+                co.fixed_hits = fixed_hits;
+                co.score = 1000 * local_hits + 100 * fixed_hits + track;
+                candidates.push_back(co);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const CandidateObservation& a, const CandidateObservation& b) {
+                      if (a.kf->mnId != b.kf->mnId) return a.kf->mnId > b.kf->mnId;
+                      if (a.score != b.score) return a.score > b.score;
+                      return a.mp->mnId < b.mp->mnId;
+                  });
+        const bool pre_imu_bootstrap_window = pMap && !pMap->isImuInitialized();
+        const bool uncap_obs_always_window = std::getenv("CPU_QR_UNCAP_OBS_ALWAYS") != nullptr;
+        const bool post_ba2_uncap_window = std::getenv("CPU_QR_UNCAP_OBS_AFTER_BA2") != nullptr && pMap && pMap->GetIniertialBA2();
+        const int feature_cap = (uncap_obs_always_window || pre_imu_bootstrap_window || post_ba2_uncap_window) ? 2147483647 : ASIC_FEATURES_PER_KF_CAP;
+        const int obs_cap_per_mp = (uncap_obs_always_window || pre_imu_bootstrap_window || post_ba2_uncap_window) ? 2147483647 : ASIC_OBS_PER_LANDMARK_CAP;
+        std::map<KeyFrame*, int> kept_per_kf;
+        std::map<MapPoint*, int> kept_per_mp;
+        std::vector<CandidateObservation> selected_obs;
+        for (const CandidateObservation& co : candidates) {
+            if (kept_per_kf[co.kf] >= feature_cap) continue;
+            if (kept_per_mp[co.mp] >= obs_cap_per_mp) continue;
+            selected_obs.push_back(co);
+            nativeExporterAllowedMps.insert(co.mp);
+            ++kept_per_kf[co.kf];
+            ++kept_per_mp[co.mp];
+        }
+        if (nativeExporterAllowedMps.size() > static_cast<std::size_t>(LANDMARK_CAP)) {
+            std::vector<MapPoint*> ranked_mps(nativeExporterAllowedMps.begin(), nativeExporterAllowedMps.end());
+            std::sort(ranked_mps.begin(), ranked_mps.end(),
+                      [&kept_per_mp](MapPoint* a, MapPoint* b) {
+                          const int ka = kept_per_mp[a];
+                          const int kb = kept_per_mp[b];
+                          if (ka != kb) return ka > kb;
+                          return a->Observations() > b->Observations();
+                      });
+            std::set<MapPoint*> limited_mps;
+            for (std::size_t i = 0; i < static_cast<std::size_t>(LANDMARK_CAP) && i < ranked_mps.size(); ++i) {
+                limited_mps.insert(ranked_mps[i]);
+            }
+            nativeExporterAllowedMps.swap(limited_mps);
+        }
+        for (const CandidateObservation& co : selected_obs) {
+            if (nativeExporterAllowedMps.find(co.mp) != nativeExporterAllowedMps.end())
+                nativeExporterAllowedObs.insert(std::make_pair(co.mp, co.kf));
+        }
+    }
+
     int nPoints = 0;
 
     int nEdges = 0;
@@ -1468,8 +1714,9 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
     {
         MapPoint* pMP = *lit;
+        if (nativeMatchExporterObs && nativeExporterAllowedMps.find(pMP) == nativeExporterAllowedMps.end()) continue;
         g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
-        vPoint->setEstimate(pMP->GetWorldPos().cast<double>());
+        vPoint->setEstimate(pMP->GetWorldPos().cast<g2o::number_t>());
         int id = pMP->mnId+maxKFid+1;
         vPoint->setId(id);
         vPoint->setMarginalized(true);
@@ -1482,6 +1729,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
         {
             KeyFrame* pKFi = mit->first;
+            if (nativeMatchExporterObs && nativeExporterAllowedObs.find(std::make_pair(pMP, pKFi)) == nativeExporterAllowedObs.end()) continue;
 
             if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
             {
@@ -1500,7 +1748,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                     e->setMeasurement(obs);
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -1526,10 +1774,10 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(id)));
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
-                    e->setMeasurement(obs);
+                    e->setMeasurement(obs.cast<g2o::number_t>());
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
                     Eigen::Matrix3d Info = Eigen::Matrix3d::Identity()*invSigma2;
-                    e->setInformation(Info);
+                    e->setInformation(Info.cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -1565,14 +1813,14 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                         e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                         e->setMeasurement(obs);
                         const float &invSigma2 = pKFi->mvInvLevelSigma2[kp.octave];
-                        e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                        e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                         g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                         e->setRobustKernel(rk);
                         rk->setDelta(thHuberMono);
 
                         Sophus::SE3f Trl = pKFi-> GetRelativePoseTrl();
-                        e->mTrl = g2o::SE3Quat(Trl.unit_quaternion().cast<double>(), Trl.translation().cast<double>());
+                        e->mTrl = g2o::SE3Quat(Trl.unit_quaternion().cast<g2o::number_t>(), Trl.translation().cast<g2o::number_t>());
 
                         e->pCamera = pKFi->mpCamera2;
 
@@ -1593,7 +1841,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         if(*pbStopFlag) {
             // Baseline dump even when BA is aborted by stop flag (for coverage)
             SolverSwitch solver_sw_abort = SolverSwitch::FromEnv();
-            if (solver_sw_abort.dump_json || solver_sw_abort.dump_baseline) {
+            if (solver_sw_abort.dump_baseline) {
                 std::string base_dir = solver_sw_abort.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw_abort.json_out_dir;
                 std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
                 std::filesystem::create_directories(dir_path);
@@ -1619,7 +1867,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         const char* nv = std::getenv("DUMP_NATIVE_LBA_DX");
         if (nv && (std::string(nv) == "1" || std::string(nv) == "true")) dump_native_lba_dx = true;
     }
-    bool export_delta = (solver_sw_pre.dump_json || solver_sw_pre.dump_baseline || dump_native_lba_dx);
+    bool export_delta = (solver_sw_pre.dump_baseline || dump_native_lba_dx);
     if (export_delta) {
         for (auto lit = lLocalKeyFrames.begin(); lit != lLocalKeyFrames.end(); lit++) {
             KeyFrame* pKFi = *lit;
@@ -1629,7 +1877,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         for (auto lit = lLocalMapPoints.begin(); lit != lLocalMapPoints.end(); lit++) {
             MapPoint* pMP = *lit;
             g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
-            if (v) initial_lm_estimates[pMP->mnId] = v->estimate();
+            if (v) initial_lm_estimates[pMP->mnId] = v->estimate().cast<double>();
         }
     }
 
@@ -1639,6 +1887,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     // Snapshot used downstream by write_delta_x to dump delta_x_g2o_fp64_<K>iter.txt.
     std::vector<std::map<int, g2o::SE3Quat>> iterK_pose_estimates(11);
     std::vector<std::map<int, Eigen::Vector3d>> iterK_lm_estimates(11);
+    const auto native_lba_opt_t0 = std::chrono::steady_clock::now();
     for (int K = 1; K <= 10; K++) {
         optimizer.optimize(1);
         if (export_delta) {
@@ -1650,10 +1899,12 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             for (auto lit = lLocalMapPoints.begin(); lit != lLocalMapPoints.end(); lit++) {
                 MapPoint* pMP = *lit;
                 g2o::VertexSBAPointXYZ* v = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId + maxKFid + 1));
-                if (v) iterK_lm_estimates[K][pMP->mnId] = v->estimate();
+                if (v) iterK_lm_estimates[K][pMP->mnId] = v->estimate().cast<double>();
             }
         }
     }
+    const auto native_lba_opt_t1 = std::chrono::steady_clock::now();
+    const long long native_lba_optimize_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(native_lba_opt_t1 - native_lba_opt_t0).count();
 
     // ==== DUMP_NATIVE_LBA_DX trace dump (visual-only LBA) ====
     // Writes /tmp/native_lba_dx/call_<K>/{input.json,dx.txt} for native vs ASIC diff.
@@ -1729,8 +1980,8 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     auto it_opt = iterK_pose_estimates[K].find(pKFi->mnId);
                     if (it_opt == iterK_pose_estimates[K].end()) continue;
                     g2o::SE3Quat delta_T = it_init->second.inverse() * it_opt->second;
-                    Eigen::Vector3d dt = delta_T.translation();
-                    Eigen::Matrix3d dR = delta_T.rotation().toRotationMatrix();
+                    Eigen::Vector3d dt = delta_T.translation().cast<double>();
+                    Eigen::Matrix3d dR = delta_T.rotation().toRotationMatrix().cast<double>();
                     Eigen::Vector3d omega;
                     omega << (dR(2,1)-dR(1,2))/2.0, (dR(0,2)-dR(2,0))/2.0, (dR(1,0)-dR(0,1))/2.0;
                     dxo << "POSE_" << K << "ITER " << pKFi->mnId;
@@ -1860,11 +2111,23 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
     // ==== Baseline output for ASIC verification ====
     SolverSwitch solver_sw_baseline = SolverSwitch::FromEnv();
-    if (solver_sw_baseline.dump_json || solver_sw_baseline.dump_baseline) {
+    if (solver_sw_baseline.dump_baseline) {
         std::string base_dir = solver_sw_baseline.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw_baseline.json_out_dir;
         std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
         std::filesystem::create_directories(dir_path);
         std::string baseline_path = dir_path + "/baseline_g2o.txt";
+        std::ofstream timing_out(dir_path + "/native_g2o_timing.txt");
+        if (timing_out.is_open()) {
+            timing_out << "solver=orbslam3_original_local_bundle_adjustment\n";
+            timing_out << "scope=optimizer_optimize_only\n";
+            timing_out << "native_g2o_optimize_ns=" << native_lba_optimize_ns << "\n";
+            timing_out << "iterations=10\n";
+            timing_out << "local_kfs=" << lLocalKeyFrames.size() << "\n";
+            timing_out << "local_mps=" << lLocalMapPoints.size() << "\n";
+            timing_out << "edges_mono=" << vpEdgesMono.size() << "\n";
+            timing_out << "edges_stereo=" << vpEdgesStereo.size() << "\n";
+            timing_out << "edges_body=" << vpEdgesBody.size() << "\n";
+        }
 
         std::ofstream baseline_out(baseline_path);
         if (baseline_out.is_open()) {
@@ -1933,8 +2196,8 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                 auto it_opt = pose_est.find(pKFi->mnId);
                 if (it_opt == pose_est.end()) continue;
                 g2o::SE3Quat delta_T = it_init->second.inverse() * it_opt->second;
-                Eigen::Vector3d dt = delta_T.translation();
-                Eigen::Matrix3d dR = delta_T.rotation().toRotationMatrix();
+                Eigen::Vector3d dt = delta_T.translation().cast<double>();
+                Eigen::Matrix3d dR = delta_T.rotation().toRotationMatrix().cast<double>();
                 Eigen::Vector3d omega;
                 omega << (dR(2,1)-dR(1,2))/2.0, (dR(0,2)-dR(2,0))/2.0, (dR(1,0)-dR(0,1))/2.0;
                 out << "POSE " << pKFi->mnId;
@@ -1999,11 +2262,11 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
         for (const auto& mit : LoopConnections) {
             KeyFrame* kfi = mit.first;
             if (!kfi || kfi->isBad()) continue;
-            const g2o::Sim3 Siw = (CorrectedSim3.count(kfi) ? CorrectedSim3.at(kfi) : g2o::Sim3(kfi->GetPose().cast<double>().unit_quaternion(), kfi->GetPose().cast<double>().translation(), 1.0));
+            const g2o::Sim3 Siw = (CorrectedSim3.count(kfi) ? CorrectedSim3.at(kfi) : g2o::Sim3(kfi->GetPose().unit_quaternion().cast<g2o::number_t>(), kfi->GetPose().translation().cast<g2o::number_t>(), 1.0));
             const g2o::Sim3 Swi = Siw.inverse();
             for (KeyFrame* kfj : mit.second) {
                 if (!kfj || kfj->isBad()) continue;
-                const g2o::Sim3 Sjw = (CorrectedSim3.count(kfj) ? CorrectedSim3.at(kfj) : g2o::Sim3(kfj->GetPose().cast<double>().unit_quaternion(), kfj->GetPose().cast<double>().translation(), 1.0));
+                const g2o::Sim3 Sjw = (CorrectedSim3.count(kfj) ? CorrectedSim3.at(kfj) : g2o::Sim3(kfj->GetPose().unit_quaternion().cast<g2o::number_t>(), kfj->GetPose().translation().cast<g2o::number_t>(), 1.0));
                 g2o::Sim3 Sji = Sjw * Swi;
                 double s = (bFixScale ? 1.0 : Sji.scale());
                 g2o::Sim3 Sji_se3(Sji.rotation(), Sji.translation()/s, 1.0);
@@ -2084,7 +2347,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
         else
         {
             Sophus::SE3d Tcw = pKF->GetPose().cast<double>();
-            g2o::Sim3 Siw(Tcw.unit_quaternion(),Tcw.translation(),1.0);
+            g2o::Sim3 Siw(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>(),1.0);
             vScw[nIDi] = Siw;
             VSim3->setEstimate(Siw);
         }
@@ -2097,7 +2360,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
         VSim3->_fix_scale = bFixScale;
 
         optimizer.addVertex(VSim3);
-        vZvectors[nIDi]=vScw[nIDi].rotation()*z_vec; // For debugging
+        vZvectors[nIDi]=(vScw[nIDi].rotation()*z_vec.cast<g2o::number_t>()).cast<double>(); // For debugging
 
         vpVertices[nIDi]=VSim3;
     }
@@ -2131,7 +2394,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
             e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
             e->setMeasurement(Sji);
 
-            e->information() = matLambda;
+            e->information() = matLambda.cast<g2o::number_t>();
 
             optimizer.addEdge(e);
             count_loop++;
@@ -2177,7 +2440,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
             e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDj)));
             e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
             e->setMeasurement(Sji);
-            e->information() = matLambda;
+            e->information() = matLambda.cast<g2o::number_t>();
             optimizer.addEdge(e);
         }
 
@@ -2202,7 +2465,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
                 el->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pLKF->mnId)));
                 el->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                 el->setMeasurement(Sli);
-                el->information() = matLambda;
+                el->information() = matLambda.cast<g2o::number_t>();
                 optimizer.addEdge(el);
             }
         }
@@ -2234,7 +2497,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
                     en->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFn->mnId)));
                     en->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                     en->setMeasurement(Sni);
-                    en->information() = matLambda;
+                    en->information() = matLambda.cast<g2o::number_t>();
                     optimizer.addEdge(en);
                 }
             }
@@ -2255,7 +2518,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
             ep->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mPrevKF->mnId)));
             ep->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
             ep->setMeasurement(Spi);
-            ep->information() = matLambda;
+            ep->information() = matLambda.cast<g2o::number_t>();
             optimizer.addEdge(ep);
         }
     }
@@ -2307,7 +2570,7 @@ void Optimizer::OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* p
         g2o::Sim3 correctedSwr = vCorrectedSwc[nIDr];
 
         Eigen::Matrix<double,3,1> eigP3Dw = pMP->GetWorldPos().cast<double>();
-        Eigen::Matrix<double,3,1> eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw));
+        Eigen::Matrix<double,3,1> eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw.cast<g2o::number_t>())).cast<double>();
         pMP->SetWorldPos(eigCorrectedP3Dw.cast<float>());
 
         pMP->UpdateNormalAndDepth();
@@ -2357,7 +2620,7 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
         const int nIDi = pKFi->mnId;
 
         Sophus::SE3d Tcw = pKFi->GetPose().cast<double>();
-        g2o::Sim3 Siw(Tcw.unit_quaternion(),Tcw.translation(),1.0);
+        g2o::Sim3 Siw(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>(),1.0);
 
         vCorrectedSwc[nIDi]=Siw.inverse();
         VSim3->setEstimate(Siw);
@@ -2388,13 +2651,13 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
         const int nIDi = pKFi->mnId;
 
         Sophus::SE3d Tcw = pKFi->GetPose().cast<double>();
-        g2o::Sim3 Siw(Tcw.unit_quaternion(),Tcw.translation(),1.0);
+        g2o::Sim3 Siw(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>(),1.0);
 
         vCorrectedSwc[nIDi]=Siw.inverse();
         VSim3->setEstimate(Siw);
 
         Sophus::SE3d Tcw_bef = pKFi->mTcwBefMerge.cast<double>();
-        vScw[nIDi] = g2o::Sim3(Tcw_bef.unit_quaternion(),Tcw_bef.translation(),1.0);
+        vScw[nIDi] = g2o::Sim3(Tcw_bef.unit_quaternion().cast<g2o::number_t>(),Tcw_bef.translation().cast<g2o::number_t>(),1.0);
 
         VSim3->setFixed(true);
 
@@ -2424,7 +2687,7 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
         g2o::VertexSim3Expmap* VSim3 = new g2o::VertexSim3Expmap();
 
         Sophus::SE3d Tcw = pKFi->GetPose().cast<double>();
-        g2o::Sim3 Siw(Tcw.unit_quaternion(),Tcw.translation(),1.0);
+        g2o::Sim3 Siw(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>(),1.0);
 
         vScw[nIDi] = Siw;
         VSim3->setEstimate(Siw);
@@ -2496,7 +2759,7 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
                 e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                 e->setMeasurement(Sji);
 
-                e->information() = matLambda;
+                e->information() = matLambda.cast<g2o::number_t>();
                 optimizer.addEdge(e);
                 num_connections++;
             }
@@ -2532,7 +2795,7 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
                     el->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pLKF->mnId)));
                     el->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                     el->setMeasurement(Sli);
-                    el->information() = matLambda;
+                    el->information() = matLambda.cast<g2o::number_t>();
                     optimizer.addEdge(el);
                     num_connections++;
                 }
@@ -2571,7 +2834,7 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
                         en->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFn->mnId)));
                         en->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                         en->setMeasurement(Sni);
-                        en->information() = matLambda;
+                        en->information() = matLambda.cast<g2o::number_t>();
                         optimizer.addEdge(en);
                         num_connections++;
                     }
@@ -2603,7 +2866,7 @@ void Optimizer::OptimizeEssentialGraph(KeyFrame* pCurKF, vector<KeyFrame*> &vpFi
         g2o::Sim3 CorrectedSiw =  VSim3->estimate();
         vCorrectedSwc[nIDi]=CorrectedSiw.inverse();
         double s = CorrectedSiw.scale();
-        Sophus::SE3d Tiw(CorrectedSiw.rotation(),CorrectedSiw.translation() / s);
+        Sophus::SE3d Tiw(CorrectedSiw.rotation().cast<double>(),(CorrectedSiw.translation() / s).cast<double>());
 
         pKFi->mTcwBefMerge = pKFi->GetPose();
         pKFi->mTwcBefMerge = pKFi->GetPoseInverse();
@@ -2722,7 +2985,7 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
                 g2o::VertexSBAPointXYZ* vPoint1 = new g2o::VertexSBAPointXYZ();
                 Eigen::Vector3f P3D1w = pMP1->GetWorldPos();
                 P3D1c = R1w*P3D1w + t1w;
-                vPoint1->setEstimate(P3D1c.cast<double>());
+                vPoint1->setEstimate(P3D1c.cast<g2o::number_t>());
                 vPoint1->setId(id1);
                 vPoint1->setFixed(true);
                 optimizer.addVertex(vPoint1);
@@ -2730,7 +2993,7 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
                 g2o::VertexSBAPointXYZ* vPoint2 = new g2o::VertexSBAPointXYZ();
                 Eigen::Vector3f P3D2w = pMP2->GetWorldPos();
                 P3D2c = R2w*P3D2w + t2w;
-                vPoint2->setEstimate(P3D2c.cast<double>());
+                vPoint2->setEstimate(P3D2c.cast<g2o::number_t>());
                 vPoint2->setId(id2);
                 vPoint2->setFixed(true);
                 optimizer.addVertex(vPoint2);
@@ -2751,7 +3014,7 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
                 g2o::VertexSBAPointXYZ* vPoint2 = new g2o::VertexSBAPointXYZ();
                 Eigen::Vector3f P3D2w = pMP2->GetWorldPos();
                 P3D2c = R2w*P3D2w + t2w;
-                vPoint2->setEstimate(P3D2c.cast<double>());
+                vPoint2->setEstimate(P3D2c.cast<g2o::number_t>());
                 vPoint2->setId(id2);
                 vPoint2->setFixed(true);
                 optimizer.addVertex(vPoint2);
@@ -2786,7 +3049,7 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
         e12->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
         e12->setMeasurement(obs1);
         const float &invSigmaSquare1 = pKF1->mvInvLevelSigma2[kpUn1.octave];
-        e12->setInformation(Eigen::Matrix2d::Identity()*invSigmaSquare1);
+        e12->setInformation((Eigen::Matrix2d::Identity()*invSigmaSquare1).cast<g2o::number_t>());
 
         g2o::RobustKernelHuber* rk1 = new g2o::RobustKernelHuber;
         e12->setRobustKernel(rk1);
@@ -2824,7 +3087,7 @@ int Optimizer::OptimizeSim3(KeyFrame *pKF1, KeyFrame *pKF2, vector<MapPoint *> &
         e21->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
         e21->setMeasurement(obs2);
         float invSigmaSquare2 = pKF2->mvInvLevelSigma2[kpUn2.octave];
-        e21->setInformation(Eigen::Matrix2d::Identity()*invSigmaSquare2);
+        e21->setInformation((Eigen::Matrix2d::Identity()*invSigmaSquare2).cast<g2o::number_t>());
 
         g2o::RobustKernelHuber* rk2 = new g2o::RobustKernelHuber;
         e21->setRobustKernel(rk2);
@@ -3049,6 +3312,28 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
     bool bNonFixed = (lFixedKeyFrames.size() == 0);
 
+    std::set<unsigned long> native_fixed_kf_ids;
+    for(list<KeyFrame*>::iterator lit=lFixedKeyFrames.begin(), lend=lFixedKeyFrames.end(); lit!=lend; lit++)
+        native_fixed_kf_ids.insert((*lit)->mnId);
+
+    const bool nativeDropFixedObservations = std::getenv("CPU_QR_NATIVE_DROP_FIXED_OBS") != nullptr;
+    int nativeMaxLandmarks = 0;
+    if (const char* e = std::getenv("CPU_QR_NATIVE_MAX_LANDMARKS")) nativeMaxLandmarks = std::atoi(e);
+    int nativeRepairMinPerPose = 0;
+    if (const char* e = std::getenv("CPU_QR_NATIVE_MAX_LANDMARKS_REPAIR_MIN_PER_POSE")) nativeRepairMinPerPose = std::atoi(e);
+    if (nativeMaxLandmarks > 0)
+    {
+        std::set<KeyFrame*> graphKFs;
+        for(KeyFrame* kf : vpOptimizableKFs) if(kf) graphKFs.insert(kf);
+        for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd=lpOptVisKFs.end(); it!=itEnd; it++) if(*it) graphKFs.insert(*it);
+        for(list<KeyFrame*>::iterator it=lFixedKeyFrames.begin(), itEnd=lFixedKeyFrames.end(); it!=itEnd; it++) if(*it) graphKFs.insert(*it);
+        ApplyNativeMaxLandmarks(lLocalMapPoints, graphKFs, native_fixed_kf_ids,
+                                nativeDropFixedObservations, nativeMaxLandmarks, nativeRepairMinPerPose,
+                                pCurrentMap, "NATIVE_LBA_PRUNE");
+    }
+    int nativeMaxObsPerMP = 0;
+    if (const char* e = std::getenv("CPU_QR_NATIVE_MAX_OBS_PER_MP")) nativeMaxObsPerMP = std::atoi(e);
+
     // ==== ASIC/JSON 硬件通路 (LocalInertialBA) ====
     SolverSwitch solver_sw = SolverSwitch::FromEnv();
     // Keep the ASIC on the steady inertial Local BA workload. After loop closing / map
@@ -3064,7 +3349,9 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         std::cerr << "[CPU_QR_GATE_SKIP_FIXED_KF] fixed_kfs=" << lFixedKeyFrames.size()
                   << " > " << maxFixedForAsic << " -> native g2o LocalInertialBA\n";
     }
-    if ((solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver || solver_sw.dump_json) && !cpuQrFixedGuard) {
+    const bool solverRouteAllowed =
+        (solver_sw.use_hw_solver || solver_sw.use_cpu_qr_solver) && !cpuQrFixedGuard;
+    if (solver_sw.dump_json || solverRouteAllowed) {
         HardwareAdapter::LocalBAInput hw_input;
         // 合并 temporal 和 visual KFs 到 local_kfs
         for(KeyFrame* kf : vpOptimizableKFs) hw_input.local_kfs.push_back(kf);
@@ -3076,6 +3363,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         hw_input.map = pCurrentMap;
         hw_input.inertial = true;
         hw_input.large = bLarge;
+        hw_input.rec_init = bRecInit;
 
         std::string base_dir = solver_sw.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw.json_out_dir;
         std::string dump_dir = base_dir;
@@ -3083,7 +3371,14 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             dump_dir = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
         }
         
-        HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, solver_sw, dump_dir);
+        // The fixed-KF guard protects solver takeover, not offline graph export.
+        // On a guarded call, preserve DUMP_JSON while forcing native g2o execution.
+        SolverSwitch adapter_sw = solver_sw;
+        if (cpuQrFixedGuard) {
+            adapter_sw.use_hw_solver = false;
+            adapter_sw.use_cpu_qr_solver = false;
+        }
+        HardwareAdapter::LocalBAResult hw_res = HardwareAdapter::RunLocalBA(hw_input, adapter_sw, dump_dir);
         const char* trace_only_env = std::getenv("CPU_QR_TRACE_ONLY");
         const bool cpu_qr_trace_only = trace_only_env && (std::string(trace_only_env) == "1" || std::string(trace_only_env) == "true");
 
@@ -3283,14 +3578,14 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             vegr[i]->setVertex(0,VG1);
             vegr[i]->setVertex(1,VG2);
             Eigen::Matrix3d InfoG = pKFi->mpImuPreintegrated->C.block<3,3>(9,9).cast<double>().inverse();
-            vegr[i]->setInformation(InfoG);
+            vegr[i]->setInformation(InfoG.cast<g2o::number_t>());
             optimizer.addEdge(vegr[i]);
 
             vear[i] = new EdgeAccRW();
             vear[i]->setVertex(0,VA1);
             vear[i]->setVertex(1,VA2);
             Eigen::Matrix3d InfoA = pKFi->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
-            vear[i]->setInformation(InfoA);           
+            vear[i]->setInformation(InfoA.cast<g2o::number_t>());
 
             optimizer.addEdge(vear[i]);
         }
@@ -3330,6 +3625,119 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
     const unsigned long iniMPid = maxKFid*5;
 
+    const bool nativeMatchExporterObs = std::getenv("CPU_QR_NATIVE_MATCH_EXPORTER_OBS") != nullptr;
+    std::set<std::pair<MapPoint*, KeyFrame*>> nativeExporterAllowedObs;
+    if (nativeMatchExporterObs)
+    {
+        std::set<KeyFrame*> local_set;
+        for(KeyFrame* kf : vpOptimizableKFs) if(kf) local_set.insert(kf);
+        for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd=lpOptVisKFs.end(); it!=itEnd; it++) if(*it) local_set.insert(*it);
+        std::set<KeyFrame*> fixed_set(lFixedKeyFrames.begin(), lFixedKeyFrames.end());
+        struct NativeExporterCandidateObservation {
+            MapPoint* mp = nullptr;
+            KeyFrame* kf = nullptr;
+            int idx = -1;
+            int local_hits = 0;
+            int fixed_hits = 0;
+            int track = 0;
+            int score = 0;
+        };
+        std::vector<NativeExporterCandidateObservation> candidates;
+        std::map<MapPoint*, int> kept_per_mp;
+        for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+        {
+            MapPoint* mp = *lit;
+            if(!mp || mp->isBad()) continue;
+            const map<KeyFrame*,tuple<int,int>> observations = mp->GetObservations();
+            std::vector<NativeExporterCandidateObservation> mp_obs;
+            int local_hits = 0;
+            int fixed_hits = 0;
+            for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+            {
+                KeyFrame* kf = mit->first;
+                if(!kf || kf->isBad() || kf->GetMap() != pCurrentMap) continue;
+                const bool is_local = (local_set.find(kf) != local_set.end());
+                const bool is_fixed = (fixed_set.find(kf) != fixed_set.end());
+                if(!is_local && !is_fixed) continue;
+                if(nativeDropFixedObservations && is_fixed) continue;
+                const int idx = get<0>(mit->second);
+                if(idx < 0 || idx >= static_cast<int>(kf->mvKeysUn.size())) continue;
+                if(is_local) ++local_hits;
+                if(is_fixed) ++fixed_hits;
+                NativeExporterCandidateObservation co;
+                co.mp = mp;
+                co.kf = kf;
+                co.idx = idx;
+                mp_obs.push_back(co);
+            }
+            if(local_hits == 0 || mp_obs.empty()) continue;
+            const int track = static_cast<int>(mp_obs.size());
+            const bool pre_imu_bootstrap = pCurrentMap && !pCurrentMap->isImuInitialized();
+            const bool uncap_obs_always = std::getenv("CPU_QR_UNCAP_OBS_ALWAYS") != nullptr;
+            const bool post_ba2_uncap_obs = std::getenv("CPU_QR_UNCAP_OBS_AFTER_BA2") != nullptr && pCurrentMap && pCurrentMap->GetIniertialBA2();
+            const int obs_cap = (uncap_obs_always || pre_imu_bootstrap || post_ba2_uncap_obs) ? INT_MAX : ASIC_OBS_PER_LANDMARK_CAP;
+            const int obs_keep = std::min(track, obs_cap);
+            std::sort(mp_obs.begin(), mp_obs.end(),
+                      [pKF](const NativeExporterCandidateObservation& a, const NativeExporterCandidateObservation& b) {
+                          const bool ac = (a.kf == pKF);
+                          const bool bc = (b.kf == pKF);
+                          if(ac != bc) return ac;
+                          return a.kf->mnId > b.kf->mnId;
+                      });
+            for(int i = 0; i < obs_keep; ++i)
+            {
+                NativeExporterCandidateObservation co = mp_obs[static_cast<std::size_t>(i)];
+                co.local_hits = local_hits;
+                co.fixed_hits = fixed_hits;
+                co.track = track;
+                co.score = 1000 * local_hits + 100 * fixed_hits + track;
+                candidates.push_back(co);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const NativeExporterCandidateObservation& a, const NativeExporterCandidateObservation& b) {
+                      if(a.kf->mnId != b.kf->mnId) return a.kf->mnId > b.kf->mnId;
+                      if(a.score != b.score) return a.score > b.score;
+                      return a.mp->mnId < b.mp->mnId;
+                  });
+        const bool pre_imu_bootstrap_window = pCurrentMap && !pCurrentMap->isImuInitialized();
+        const bool uncap_obs_always_window = std::getenv("CPU_QR_UNCAP_OBS_ALWAYS") != nullptr;
+        const bool post_ba2_uncap_window = std::getenv("CPU_QR_UNCAP_OBS_AFTER_BA2") != nullptr && pCurrentMap && pCurrentMap->GetIniertialBA2();
+        const int feature_cap = (uncap_obs_always_window || pre_imu_bootstrap_window || post_ba2_uncap_window) ? INT_MAX : ASIC_FEATURES_PER_KF_CAP;
+        const int obs_cap_per_mp = (uncap_obs_always_window || pre_imu_bootstrap_window || post_ba2_uncap_window) ? INT_MAX : ASIC_OBS_PER_LANDMARK_CAP;
+        std::map<KeyFrame*, int> kept_per_kf;
+        std::set<MapPoint*> selected_mps;
+        for(const NativeExporterCandidateObservation& co : candidates)
+        {
+            if(kept_per_kf[co.kf] >= feature_cap) continue;
+            if(kept_per_mp[co.mp] >= obs_cap_per_mp) continue;
+            nativeExporterAllowedObs.insert(std::make_pair(co.mp, co.kf));
+            selected_mps.insert(co.mp);
+            ++kept_per_kf[co.kf];
+            ++kept_per_mp[co.mp];
+        }
+        if(selected_mps.size() > static_cast<std::size_t>(LANDMARK_CAP))
+        {
+            std::vector<MapPoint*> ranked_mps(selected_mps.begin(), selected_mps.end());
+            std::sort(ranked_mps.begin(), ranked_mps.end(),
+                      [&kept_per_mp](MapPoint* a, MapPoint* b) {
+                          const int ka = kept_per_mp[a];
+                          const int kb = kept_per_mp[b];
+                          if(ka != kb) return ka > kb;
+                          return a->Observations() > b->Observations();
+                      });
+            std::set<MapPoint*> limited_mps;
+            for(std::size_t i = 0; i < static_cast<std::size_t>(LANDMARK_CAP) && i < ranked_mps.size(); ++i)
+                limited_mps.insert(ranked_mps[i]);
+            for(std::set<std::pair<MapPoint*, KeyFrame*>>::iterator it = nativeExporterAllowedObs.begin(); it != nativeExporterAllowedObs.end(); )
+            {
+                if(limited_mps.find(it->first) == limited_mps.end()) it = nativeExporterAllowedObs.erase(it);
+                else ++it;
+            }
+        }
+        std::cerr << "[NATIVE_MATCH_EXPORTER_OBS] allowed_edges=" << nativeExporterAllowedObs.size() << std::endl;
+    }
+
     map<int,int> mVisEdges;
     for(int i=0;i<N;i++)
     {
@@ -3345,7 +3753,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     {
         MapPoint* pMP = *lit;
         g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
-        vPoint->setEstimate(pMP->GetWorldPos().cast<double>());
+        vPoint->setEstimate(pMP->GetWorldPos().cast<g2o::number_t>());
 
         unsigned long id = pMP->mnId+iniMPid+1;
         vPoint->setId(id);
@@ -3353,12 +3761,34 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         optimizer.addVertex(vPoint);
         const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
 
+        // Per-MP obs cap: keep only the N observations with lowest KF mnId (aligns with prune_json)
+        std::set<unsigned long> nativeObsCapAllowed;
+        if (nativeMaxObsPerMP > 0) {
+            std::vector<unsigned long> validKFIds;
+            for (auto mit2 = observations.begin(); mit2 != observations.end(); ++mit2) {
+                KeyFrame* kf2 = mit2->first;
+                if (kf2->mnBALocalForKF != pKF->mnId && kf2->mnBAFixedForKF != pKF->mnId) continue;
+                if (nativeDropFixedObservations && native_fixed_kf_ids.count(kf2->mnId)) continue;
+                if (kf2->isBad() || kf2->GetMap() != pCurrentMap) continue;
+                validKFIds.push_back(kf2->mnId);
+            }
+            std::sort(validKFIds.begin(), validKFIds.end());
+            int keep = std::min(nativeMaxObsPerMP, static_cast<int>(validKFIds.size()));
+            for (int ki = 0; ki < keep; ++ki) nativeObsCapAllowed.insert(validKFIds[ki]);
+        }
+
         // Create visual constraints
         for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
         {
             KeyFrame* pKFi = mit->first;
 
             if(pKFi->mnBALocalForKF!=pKF->mnId && pKFi->mnBAFixedForKF!=pKF->mnId)
+                continue;
+            if(nativeDropFixedObservations && native_fixed_kf_ids.count(pKFi->mnId))
+                continue;
+            if(!nativeMatchExporterObs && nativeMaxObsPerMP > 0 && nativeObsCapAllowed.find(pKFi->mnId) == nativeObsCapAllowed.end())
+                continue;
+            if(nativeMatchExporterObs && nativeExporterAllowedObs.find(std::make_pair(pMP, pKFi)) == nativeExporterAllowedObs.end())
                 continue;
 
             if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
@@ -3386,7 +3816,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                     const float unc2 = pKFi->mpCamera->uncertainty2(obs);
 
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -3417,7 +3847,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                     const float unc2 = pKFi->mpCamera->uncertainty2(obs.head(2));
 
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix3d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix3d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -3451,7 +3881,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                         const float unc2 = pKFi->mpCamera->uncertainty2(obs);
 
                         const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave]/unc2;
-                        e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                        e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                         g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                         e->setRobustKernel(rk);
@@ -3470,6 +3900,8 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     //cout << "Total map points: " << lLocalMapPoints.size() << endl;
     for(map<int,int>::iterator mit=mVisEdges.begin(), mend=mVisEdges.end(); mit!=mend; mit++)
     {
+        if(nativeDropFixedObservations && native_fixed_kf_ids.count(static_cast<unsigned long>(mit->first)))
+            continue;
         assert(mit->second>=3);
     }
 
@@ -3524,9 +3956,10 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         const char* nv = std::getenv("DUMP_NATIVE_LBA_DX");
         if (nv && (std::string(nv) == "1" || std::string(nv) == "true")) dump_native_lba_dx_inertial = true;
     }
-    bool capture_per_iter = (sw_iter_capture.dump_json || sw_iter_capture.dump_baseline || dump_native_lba_dx_inertial);
+    bool capture_per_iter = (sw_iter_capture.dump_baseline || dump_native_lba_dx_inertial);
     std::vector<std::map<int, std::pair<Eigen::Matrix3d, Eigen::Vector3d>>> iterK_pose(opt_it + 1);
     std::vector<std::map<int, Eigen::Vector3d>> iterK_lm(opt_it + 1);
+    const auto native_opt_t0 = std::chrono::steady_clock::now();
     for (int K = 1; K <= opt_it; K++) {
         optimizer.optimize(1);
         if (capture_per_iter) {
@@ -3544,10 +3977,12 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
                 MapPoint* pMP = *it_mp;
                 g2o::VertexSBAPointXYZ* vP = static_cast<g2o::VertexSBAPointXYZ*>(
                     optimizer.vertex(pMP->mnId + iniMPid + 1));
-                if (vP) iterK_lm[K][pMP->mnId] = vP->estimate();
+                if (vP) iterK_lm[K][pMP->mnId] = vP->estimate().cast<double>();
             }
         }
     }
+    const auto native_opt_t1 = std::chrono::steady_clock::now();
+    const long long native_optimize_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(native_opt_t1 - native_opt_t0).count();
     float err_end = optimizer.activeRobustChi2();
     if(pbStopFlag)
         optimizer.setForceStopFlag(pbStopFlag);
@@ -3600,11 +4035,28 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         cout << "FAIL LOCAL-INERTIAL BA!!!!" << endl;
         // Still output baseline for debugging even on failure
         SolverSwitch sw_fail = SolverSwitch::FromEnv();
-        if (sw_fail.dump_json || sw_fail.dump_baseline) {
+        if (sw_fail.dump_baseline) {
             std::string base_dir = sw_fail.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : sw_fail.json_out_dir;
             std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
             std::filesystem::create_directories(dir_path);
             std::string baseline_path = dir_path + "/baseline_g2o.txt";
+            std::ofstream timing_out(dir_path + "/native_g2o_timing.txt");
+            if (timing_out.is_open()) {
+                timing_out << "solver=orbslam3_original_local_inertial_ba\n";
+                timing_out << "scope=optimizer_optimize_only\n";
+                timing_out << "native_g2o_optimize_ns=" << native_optimize_ns << "\n";
+                timing_out << "iterations=" << opt_it << "\n";
+                timing_out << "bLarge=" << (bLarge ? 1 : 0) << "\n";
+                timing_out << "bRecInit=" << (bRecInit ? 1 : 0) << "\n";
+                timing_out << "temporal_kfs=" << vpOptimizableKFs.size() << "\n";
+                timing_out << "visual_kfs=" << lpOptVisKFs.size() << "\n";
+                timing_out << "fixed_kfs=" << lFixedKeyFrames.size() << "\n";
+                timing_out << "local_mps=" << lLocalMapPoints.size() << "\n";
+                timing_out << "edges_mono=" << vpEdgesMono.size() << "\n";
+                timing_out << "edges_stereo=" << vpEdgesStereo.size() << "\n";
+                timing_out << "failed=1\n";
+                timing_out << "failure_reason=convergence\n";
+            }
             std::ofstream fail_out(baseline_path);
             if (fail_out.is_open()) {
                 fail_out << "# FAILED LocalInertialBA - convergence issue\n";
@@ -3678,12 +4130,27 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
 
     // ==== Baseline output for ASIC verification (LocalInertialBA) ====
     SolverSwitch solver_sw_baseline = SolverSwitch::FromEnv();
-    if (solver_sw_baseline.dump_json || solver_sw_baseline.dump_baseline) {
+    if (solver_sw_baseline.dump_baseline) {
         std::string base_dir = solver_sw_baseline.json_out_dir.empty() ? "/tmp/orbslam3_hw_dump" : solver_sw_baseline.json_out_dir;
         std::string dir_path = base_dir + "/lba_kf_" + std::to_string(pKF->mnId);
         std::filesystem::create_directories(dir_path);
         std::string baseline_path = dir_path + "/baseline_g2o.txt";
-        
+        std::ofstream timing_out(dir_path + "/native_g2o_timing.txt");
+        if (timing_out.is_open()) {
+            timing_out << "solver=orbslam3_original_local_inertial_ba\n";
+            timing_out << "scope=optimizer_optimize_only\n";
+            timing_out << "native_g2o_optimize_ns=" << native_optimize_ns << "\n";
+            timing_out << "iterations=" << opt_it << "\n";
+            timing_out << "bLarge=" << (bLarge ? 1 : 0) << "\n";
+            timing_out << "bRecInit=" << (bRecInit ? 1 : 0) << "\n";
+            timing_out << "temporal_kfs=" << vpOptimizableKFs.size() << "\n";
+            timing_out << "visual_kfs=" << lpOptVisKFs.size() << "\n";
+            timing_out << "fixed_kfs=" << lFixedKeyFrames.size() << "\n";
+            timing_out << "local_mps=" << lLocalMapPoints.size() << "\n";
+            timing_out << "edges_mono=" << vpEdgesMono.size() << "\n";
+            timing_out << "edges_stereo=" << vpEdgesStereo.size() << "\n";
+        }
+
         std::ofstream baseline_out(baseline_path);
         if (baseline_out.is_open()) {
             baseline_out << std::fixed << std::setprecision(10);
@@ -4160,12 +4627,12 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &sc
     EdgePriorAcc* epa = new EdgePriorAcc(bprior);
     epa->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VA));
     double infoPriorA = priorA;
-    epa->setInformation(infoPriorA*Eigen::Matrix3d::Identity());
+    epa->setInformation((infoPriorA*Eigen::Matrix3d::Identity()).cast<g2o::number_t>());
     optimizer.addEdge(epa);
     EdgePriorGyro* epg = new EdgePriorGyro(bprior);
     epg->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VG));
     double infoPriorG = priorG;
-    epg->setInformation(infoPriorG*Eigen::Matrix3d::Identity());
+    epg->setInformation((infoPriorG*Eigen::Matrix3d::Identity()).cast<g2o::number_t>());
     optimizer.addEdge(epg);
 
     // Gravity and scale
@@ -4334,12 +4801,12 @@ void Optimizer::InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vect
     EdgePriorAcc* epa = new EdgePriorAcc(bprior);
     epa->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VA));
     double infoPriorA = priorA;
-    epa->setInformation(infoPriorA*Eigen::Matrix3d::Identity());
+    epa->setInformation((infoPriorA*Eigen::Matrix3d::Identity()).cast<g2o::number_t>());
     optimizer.addEdge(epa);
     EdgePriorGyro* epg = new EdgePriorGyro(bprior);
     epg->setVertex(0,dynamic_cast<g2o::OptimizableGraph::Vertex*>(VG));
     double infoPriorG = priorG;
-    epg->setInformation(infoPriorG*Eigen::Matrix3d::Identity());
+    epg->setInformation((infoPriorG*Eigen::Matrix3d::Identity()).cast<g2o::number_t>());
     optimizer.addEdge(epg);
 
     // Gravity and scale
@@ -4590,7 +5057,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
 
         g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
         Sophus::SE3<float> Tcw = pKFi->GetPose();
-        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(),Tcw.translation().cast<double>()));
+        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>()));
         vSE3->setId(pKFi->mnId);
         vSE3->setFixed(true);
         optimizer.addVertex(vSE3);
@@ -4626,7 +5093,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
 
         g2o::VertexSE3Expmap * vSE3 = new g2o::VertexSE3Expmap();
         Sophus::SE3<float> Tcw = pKFi->GetPose();
-        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<double>(),Tcw.translation().cast<double>()));
+        vSE3->setEstimate(g2o::SE3Quat(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>()));
         vSE3->setId(pKFi->mnId);
         optimizer.addVertex(vSE3);
         if(pKFi->mnId>maxKFid)
@@ -4686,7 +5153,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
             continue;
 
         g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
-        vPoint->setEstimate(pMPi->GetWorldPos().cast<double>());
+        vPoint->setEstimate(pMPi->GetWorldPos().cast<g2o::number_t>());
         const int id = pMPi->mnId+maxKFid+1;
         vPoint->setId(id);
         vPoint->setMarginalized(true);
@@ -4718,7 +5185,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
                 e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mnId)));
                 e->setMeasurement(obs);
                 const float &invSigma2 = pKF->mvInvLevelSigma2[kpUn.octave];
-                e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                 g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                 e->setRobustKernel(rk);
@@ -4745,10 +5212,10 @@ void Optimizer::LocalBundleAdjustment(KeyFrame* pMainKF,vector<KeyFrame*> vpAdju
 
                 e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(id)));
                 e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKF->mnId)));
-                e->setMeasurement(obs);
+                e->setMeasurement(obs.cast<g2o::number_t>());
                 const float &invSigma2 = pKF->mvInvLevelSigma2[kpUn.octave];
                 Eigen::Matrix3d Info = Eigen::Matrix3d::Identity()*invSigma2;
-                e->setInformation(Info);
+                e->setInformation(Info.cast<g2o::number_t>());
 
                 g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                 e->setRobustKernel(rk);
@@ -5288,14 +5755,14 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
             vegr[i]->setVertex(0,VG1);
             vegr[i]->setVertex(1,VG2);
             Eigen::Matrix3d InfoG = pKFi->mpImuPreintegrated->C.block<3,3>(9,9).cast<double>().inverse();
-            vegr[i]->setInformation(InfoG);
+            vegr[i]->setInformation(InfoG.cast<g2o::number_t>());
             optimizer.addEdge(vegr[i]);
 
             vear[i] = new EdgeAccRW();
             vear[i]->setVertex(0,VA1);
             vear[i]->setVertex(1,VA2);
             Eigen::Matrix3d InfoA = pKFi->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
-            vear[i]->setInformation(InfoA);
+            vear[i]->setInformation(InfoA.cast<g2o::number_t>());
             optimizer.addEdge(vear[i]);
         }
         else
@@ -5342,7 +5809,7 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
             continue;
 
         g2o::VertexSBAPointXYZ* vPoint = new g2o::VertexSBAPointXYZ();
-        vPoint->setEstimate(pMP->GetWorldPos().cast<double>());
+        vPoint->setEstimate(pMP->GetWorldPos().cast<g2o::number_t>());
 
         unsigned long id = pMP->mnId+iniMPid+1;
         vPoint->setId(id);
@@ -5384,7 +5851,7 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                     e->setMeasurement(obs);
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -5406,7 +5873,7 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFi->mnId)));
                     e->setMeasurement(obs);
                     const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
-                    e->setInformation(Eigen::Matrix3d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix3d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -5492,7 +5959,7 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
         pKFi->SetPose(Tcw);
 
         Sophus::SE3d Tiw = pKFi->GetPose().cast<double>();
-        g2o::Sim3 g2oSiw(Tiw.unit_quaternion(),Tiw.translation(),1.0);
+        g2o::Sim3 g2oSiw(Tiw.unit_quaternion().cast<g2o::number_t>(),Tiw.translation().cast<g2o::number_t>(),1.0);
         corrPoses[pKFi] = g2oSiw;
 
         if(pKFi->bImu)
@@ -5516,7 +5983,7 @@ void Optimizer::MergeInertialBA(KeyFrame* pCurrKF, KeyFrame* pMergeKF, bool *pbS
         pKFi->SetPose(Tcw);
 
         Sophus::SE3d Tiw = pKFi->GetPose().cast<double>();
-        g2o::Sim3 g2oSiw(Tiw.unit_quaternion(),Tiw.translation(),1.0);
+        g2o::Sim3 g2oSiw(Tiw.unit_quaternion().cast<g2o::number_t>(),Tiw.translation().cast<g2o::number_t>(),1.0);
         corrPoses[pKFi] = g2oSiw;
 
         if(pKFi->bImu)
@@ -5628,7 +6095,7 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
                     const float unc2 = pFrame->mpCamera->uncertainty2(obs);
 
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -5659,7 +6126,7 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
                     const float unc2 = pFrame->mpCamera->uncertainty2(obs.head(2));
 
                     const float &invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix3d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix3d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -5690,7 +6157,7 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
                     const float unc2 = pFrame->mpCamera->uncertainty2(obs);
 
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -5738,14 +6205,14 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
     egr->setVertex(0,VGk);
     egr->setVertex(1,VG);
     Eigen::Matrix3d InfoG = pFrame->mpImuPreintegrated->C.block<3,3>(9,9).cast<double>().inverse();
-    egr->setInformation(InfoG);
+    egr->setInformation(InfoG.cast<g2o::number_t>());
     optimizer.addEdge(egr);
 
     EdgeAccRW* ear = new EdgeAccRW();
     ear->setVertex(0,VAk);
     ear->setVertex(1,VA);
     Eigen::Matrix3d InfoA = pFrame->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
-    ear->setInformation(InfoA);
+    ear->setInformation(InfoA.cast<g2o::number_t>());
     optimizer.addEdge(ear);
 
     // We perform 4 optimizations, after each optimization we classify observation as inlier/outlier
@@ -6011,7 +6478,7 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
                     const float unc2 = pFrame->mpCamera->uncertainty2(obs);
 
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -6042,7 +6509,7 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
                     const float unc2 = pFrame->mpCamera->uncertainty2(obs.head(2));
 
                     const float &invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix3d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix3d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -6073,7 +6540,7 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
                     const float unc2 = pFrame->mpCamera->uncertainty2(obs);
 
                     const float invSigma2 = pFrame->mvInvLevelSigma2[kpUn.octave]/unc2;
-                    e->setInformation(Eigen::Matrix2d::Identity()*invSigma2);
+                    e->setInformation((Eigen::Matrix2d::Identity()*invSigma2).cast<g2o::number_t>());
 
                     g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -6124,14 +6591,14 @@ int Optimizer::PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit)
     egr->setVertex(0,VGk);
     egr->setVertex(1,VG);
     Eigen::Matrix3d InfoG = pFrame->mpImuPreintegrated->C.block<3,3>(9,9).cast<double>().inverse();
-    egr->setInformation(InfoG);
+    egr->setInformation(InfoG.cast<g2o::number_t>());
     optimizer.addEdge(egr);
 
     EdgeAccRW* ear = new EdgeAccRW();
     ear->setVertex(0,VAk);
     ear->setVertex(1,VA);
     Eigen::Matrix3d InfoA = pFrame->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
-    ear->setInformation(InfoA);
+    ear->setInformation(InfoA.cast<g2o::number_t>());
     optimizer.addEdge(ear);
 
     if (!pFp->mpcpi)
@@ -6390,14 +6857,14 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
         {
             vScw[nIDi] = it->second;
             const g2o::Sim3 Swc = it->second.inverse();
-            Eigen::Matrix3d Rwc = Swc.rotation().toRotationMatrix();
-            Eigen::Vector3d twc = Swc.translation();
+            Eigen::Matrix3d Rwc = Swc.rotation().toRotationMatrix().cast<double>();
+            Eigen::Vector3d twc = Swc.translation().cast<double>();
             V4DoF = new VertexPose4DoF(Rwc, twc, pKF);
         }
         else
         {
             Sophus::SE3d Tcw = pKF->GetPose().cast<double>();
-            g2o::Sim3 Siw(Tcw.unit_quaternion(),Tcw.translation(),1.0);
+            g2o::Sim3 Siw(Tcw.unit_quaternion().cast<g2o::number_t>(),Tcw.translation().cast<g2o::number_t>(),1.0);
 
             vScw[nIDi] = Siw;
             V4DoF = new VertexPose4DoF(pKF);
@@ -6438,15 +6905,15 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
             const g2o::Sim3 Sjw = vScw[nIDj];
             const g2o::Sim3 Sij = Siw * Sjw.inverse();
             Eigen::Matrix4d Tij;
-            Tij.block<3,3>(0,0) = Sij.rotation().toRotationMatrix();
-            Tij.block<3,1>(0,3) = Sij.translation();
+            Tij.block<3,3>(0,0) = Sij.rotation().toRotationMatrix().cast<double>();
+            Tij.block<3,1>(0,3) = Sij.translation().cast<double>();
             Tij(3,3) = 1.;
 
             Edge4DoF* e = new Edge4DoF(Tij);
             e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDj)));
             e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
 
-            e->information() = matLambda;
+            e->information() = matLambda.cast<g2o::number_t>();
             e_loop = e;
             optimizer.addEdge(e);
 
@@ -6488,14 +6955,14 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
 
             g2o::Sim3 Sij = Siw * Swj;
             Eigen::Matrix4d Tij;
-            Tij.block<3,3>(0,0) = Sij.rotation().toRotationMatrix();
-            Tij.block<3,1>(0,3) = Sij.translation();
+            Tij.block<3,3>(0,0) = Sij.rotation().toRotationMatrix().cast<double>();
+            Tij.block<3,1>(0,3) = Sij.translation().cast<double>();
             Tij(3,3)=1.;
 
             Edge4DoF* e = new Edge4DoF(Tij);
             e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
             e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDj)));
-            e->information() = matLambda;
+            e->information() = matLambda.cast<g2o::number_t>();
             optimizer.addEdge(e);
         }
 
@@ -6516,14 +6983,14 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
 
             g2o::Sim3 Sij = Siw * Swj;
             Eigen::Matrix4d Tij;
-            Tij.block<3,3>(0,0) = Sij.rotation().toRotationMatrix();
-            Tij.block<3,1>(0,3) = Sij.translation();
+            Tij.block<3,3>(0,0) = Sij.rotation().toRotationMatrix().cast<double>();
+            Tij.block<3,1>(0,3) = Sij.translation().cast<double>();
             Tij(3,3)=1.;
 
             Edge4DoF* e = new Edge4DoF(Tij);
             e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
             e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDj)));
-            e->information() = matLambda;
+            e->information() = matLambda.cast<g2o::number_t>();
             optimizer.addEdge(e);
         }
 
@@ -6545,14 +7012,14 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
 
                 g2o::Sim3 Sil = Siw * Swl;
                 Eigen::Matrix4d Til;
-                Til.block<3,3>(0,0) = Sil.rotation().toRotationMatrix();
-                Til.block<3,1>(0,3) = Sil.translation();
+                Til.block<3,3>(0,0) = Sil.rotation().toRotationMatrix().cast<double>();
+                Til.block<3,1>(0,3) = Sil.translation().cast<double>();
                 Til(3,3) = 1.;
 
                 Edge4DoF* e = new Edge4DoF(Til);
                 e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                 e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pLKF->mnId)));
-                e->information() = matLambda;
+                e->information() = matLambda.cast<g2o::number_t>();
                 optimizer.addEdge(e);
             }
         }
@@ -6580,13 +7047,13 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
 
                     g2o::Sim3 Sin = Siw * Swn;
                     Eigen::Matrix4d Tin;
-                    Tin.block<3,3>(0,0) = Sin.rotation().toRotationMatrix();
-                    Tin.block<3,1>(0,3) = Sin.translation();
+                    Tin.block<3,3>(0,0) = Sin.rotation().toRotationMatrix().cast<double>();
+                    Tin.block<3,1>(0,3) = Sin.translation().cast<double>();
                     Tin(3,3) = 1.;
                     Edge4DoF* e = new Edge4DoF(Tin);
                     e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(nIDi)));
                     e->setVertex(1, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(pKFn->mnId)));
-                    e->information() = matLambda;
+                    e->information() = matLambda.cast<g2o::number_t>();
                     optimizer.addEdge(e);
                 }
             }
@@ -6610,10 +7077,10 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
         Eigen::Matrix3d Ri = Vi->estimate().Rcw[0];
         Eigen::Vector3d ti = Vi->estimate().tcw[0];
 
-        g2o::Sim3 CorrectedSiw = g2o::Sim3(Ri,ti,1.);
+        g2o::Sim3 CorrectedSiw = g2o::Sim3(Ri.cast<g2o::number_t>(),ti.cast<g2o::number_t>(),1.);
         vCorrectedSwc[nIDi]=CorrectedSiw.inverse();
 
-        Sophus::SE3d Tiw(CorrectedSiw.rotation(),CorrectedSiw.translation());
+        Sophus::SE3d Tiw(CorrectedSiw.rotation().cast<double>(),CorrectedSiw.translation().cast<double>());
         pKFi->SetPose(Tiw.cast<float>());
     }
 
@@ -6634,7 +7101,7 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
         g2o::Sim3 correctedSwr = vCorrectedSwc[nIDr];
 
         Eigen::Matrix<double,3,1> eigP3Dw = pMP->GetWorldPos().cast<double>();
-        Eigen::Matrix<double,3,1> eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw));
+        Eigen::Matrix<double,3,1> eigCorrectedP3Dw = correctedSwr.map(Srw.map(eigP3Dw.cast<g2o::number_t>())).cast<double>();
         pMP->SetWorldPos(eigCorrectedP3Dw.cast<float>());
 
         pMP->UpdateNormalAndDepth();

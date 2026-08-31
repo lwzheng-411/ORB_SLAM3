@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -44,7 +45,7 @@ namespace g2o {
 
       virtual bool init(bool online = false);
 
-      virtual bool computeMarginals(SparseBlockMatrix<MatrixXd>& spinv, const std::vector<std::pair<int, int> >& blockIndices);
+      virtual bool computeMarginals(SparseBlockMatrix<MatrixX>& spinv, const std::vector<std::pair<int, int> >& blockIndices);
 
       virtual bool buildLinearStructure();
 

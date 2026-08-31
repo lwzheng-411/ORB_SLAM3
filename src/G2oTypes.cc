@@ -189,7 +189,7 @@ bool ImuCamPose::isDepthPositive(const Eigen::Vector3d &Xw, int cam_idx) const
     return (Rcw[cam_idx].row(2) * Xw + tcw[cam_idx](2)) > 0.0;
 }
 
-void ImuCamPose::Update(const double *pu)
+void ImuCamPose::Update(const g2o::number_t *pu)
 {
     Eigen::Vector3d ur, ut;
     ur << pu[0], pu[1], pu[2];
@@ -219,7 +219,7 @@ void ImuCamPose::Update(const double *pu)
 
 }
 
-void ImuCamPose::UpdateW(const double *pu)
+void ImuCamPose::UpdateW(const g2o::number_t *pu)
 {
     Eigen::Vector3d ur, ut;
     ur << pu[0], pu[1], pu[2];
@@ -260,7 +260,7 @@ InvDepthPoint::InvDepthPoint(double _rho, double _u, double _v, KeyFrame* pHostK
 {
 }
 
-void InvDepthPoint::Update(const double *pu)
+void InvDepthPoint::Update(const g2o::number_t *pu)
 {
     rho += *pu;
 }
@@ -353,12 +353,12 @@ void EdgeMono::linearizeOplus()
 
     const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
     const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
-    const Eigen::Vector3d Xc = Rcw*VPoint->estimate() + tcw;
+    const Eigen::Vector3d Xc = Rcw*VPoint->estimate().cast<double>() + tcw;
     const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx]*Xc+VPose->estimate().tbc[cam_idx];
     const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
 
     const Eigen::Matrix<double,2,3> proj_jac = VPose->estimate().pCamera[cam_idx]->projectJac(Xc);
-    _jacobianOplusXi = -proj_jac * Rcw;
+    _jacobianOplusXi = (-proj_jac * Rcw).cast<g2o::number_t>();
 
     Eigen::Matrix<double,3,6> SE3deriv;
     double x = Xb(0);
@@ -369,7 +369,7 @@ void EdgeMono::linearizeOplus()
             -z , 0.0, x, 0.0, 1.0, 0.0,
             y ,  -x , 0.0, 0.0, 0.0, 1.0;
 
-    _jacobianOplusXj = proj_jac * Rcb * SE3deriv; // TODO optimize this product
+    _jacobianOplusXj = (proj_jac * Rcb * SE3deriv).cast<g2o::number_t>(); // TODO optimize this product
 }
 
 void EdgeMonoOnlyPose::linearizeOplus()
@@ -391,7 +391,7 @@ void EdgeMonoOnlyPose::linearizeOplus()
     SE3deriv << 0.0, z,   -y, 1.0, 0.0, 0.0,
             -z , 0.0, x, 0.0, 1.0, 0.0,
             y ,  -x , 0.0, 0.0, 0.0, 1.0;
-    _jacobianOplusXi = proj_jac * Rcb * SE3deriv; // symbol different becasue of update mode
+    _jacobianOplusXi = (proj_jac * Rcb * SE3deriv).cast<g2o::number_t>(); // symbol different becasue of update mode
 }
 
 void EdgeStereo::linearizeOplus()
@@ -401,7 +401,7 @@ void EdgeStereo::linearizeOplus()
 
     const Eigen::Matrix3d &Rcw = VPose->estimate().Rcw[cam_idx];
     const Eigen::Vector3d &tcw = VPose->estimate().tcw[cam_idx];
-    const Eigen::Vector3d Xc = Rcw*VPoint->estimate() + tcw;
+    const Eigen::Vector3d Xc = Rcw*VPoint->estimate().cast<double>() + tcw;
     const Eigen::Vector3d Xb = VPose->estimate().Rbc[cam_idx]*Xc+VPose->estimate().tbc[cam_idx];
     const Eigen::Matrix3d &Rcb = VPose->estimate().Rcb[cam_idx];
     const double bf = VPose->estimate().bf;
@@ -412,7 +412,7 @@ void EdgeStereo::linearizeOplus()
     proj_jac.block<1,3>(2,0) = proj_jac.block<1,3>(0,0);
     proj_jac(2,2) += bf*inv_z2;
 
-    _jacobianOplusXi = -proj_jac * Rcw;
+    _jacobianOplusXi = (-proj_jac * Rcw).cast<g2o::number_t>();
 
     Eigen::Matrix<double,3,6> SE3deriv;
     double x = Xb(0);
@@ -423,7 +423,7 @@ void EdgeStereo::linearizeOplus()
             -z , 0.0, x, 0.0, 1.0, 0.0,
             y ,  -x , 0.0, 0.0, 0.0, 1.0;
 
-    _jacobianOplusXj = proj_jac * Rcb * SE3deriv;
+    _jacobianOplusXj = (proj_jac * Rcb * SE3deriv).cast<g2o::number_t>();
 }
 
 void EdgeStereoOnlyPose::linearizeOplus()
@@ -450,7 +450,7 @@ void EdgeStereoOnlyPose::linearizeOplus()
     SE3deriv << 0.0, z,   -y, 1.0, 0.0, 0.0,
             -z , 0.0, x, 0.0, 1.0, 0.0,
             y ,  -x , 0.0, 0.0, 0.0, 1.0;
-    _jacobianOplusXi = proj_jac * Rcb * SE3deriv;
+    _jacobianOplusXi = (proj_jac * Rcb * SE3deriv).cast<g2o::number_t>();
 }
 
 VertexVelocity::VertexVelocity(KeyFrame* pKF)
@@ -505,7 +505,7 @@ EdgeInertial::EdgeInertial(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<double>(
         if(eigs[i]<1e-12)
             eigs[i]=0;
     Info = es.eigenvectors()*eigs.asDiagonal()*es.eigenvectors().transpose();
-    setInformation(Info);
+    setInformation(Info.cast<g2o::number_t>());
 }
 
 
@@ -530,7 +530,7 @@ void EdgeInertial::computeError()
     const Eigen::Vector3d ep = VP1->estimate().Rwb.transpose()*(VP2->estimate().twb - VP1->estimate().twb
                                                                - VV1->estimate()*dt - g*dt*dt/2) - dP;
 
-    _error << er, ev, ep;
+    _error << er.cast<g2o::number_t>(), ev.cast<g2o::number_t>(), ep.cast<g2o::number_t>();
 }
 
 void EdgeInertial::linearizeOplus()
@@ -558,39 +558,39 @@ void EdgeInertial::linearizeOplus()
     // Jacobians wrt Pose 1
     _jacobianOplus[0].setZero();
      // rotation
-    _jacobianOplus[0].block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1; // OK
-    _jacobianOplus[0].block<3,3>(3,0) = Sophus::SO3d::hat(Rbw1*(VV2->estimate() - VV1->estimate() - g*dt)); // OK
-    _jacobianOplus[0].block<3,3>(6,0) = Sophus::SO3d::hat(Rbw1*(VP2->estimate().twb - VP1->estimate().twb
-                                                   - VV1->estimate()*dt - 0.5*g*dt*dt)); // OK
+    _jacobianOplus[0].block<3,3>(0,0) = (-invJr*Rwb2.transpose()*Rwb1).cast<g2o::number_t>(); // OK
+    _jacobianOplus[0].block<3,3>(3,0) = (Sophus::SO3d::hat(Rbw1*(VV2->estimate() - VV1->estimate() - g*dt))).cast<g2o::number_t>(); // OK
+    _jacobianOplus[0].block<3,3>(6,0) = (Sophus::SO3d::hat(Rbw1*(VP2->estimate().twb - VP1->estimate().twb
+                                                   - VV1->estimate()*dt - 0.5*g*dt*dt))).cast<g2o::number_t>(); // OK
     // translation
-    _jacobianOplus[0].block<3,3>(6,3) = -Eigen::Matrix3d::Identity(); // OK
+    _jacobianOplus[0].block<3,3>(6,3) = (-Eigen::Matrix3d::Identity()).cast<g2o::number_t>(); // OK
 
     // Jacobians wrt Velocity 1
     _jacobianOplus[1].setZero();
-    _jacobianOplus[1].block<3,3>(3,0) = -Rbw1; // OK
-    _jacobianOplus[1].block<3,3>(6,0) = -Rbw1*dt; // OK
+    _jacobianOplus[1].block<3,3>(3,0) = (-Rbw1).cast<g2o::number_t>(); // OK
+    _jacobianOplus[1].block<3,3>(6,0) = (-Rbw1*dt).cast<g2o::number_t>(); // OK
 
     // Jacobians wrt Gyro 1
     _jacobianOplus[2].setZero();
-    _jacobianOplus[2].block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3(JRg*dbg)*JRg; // OK
-    _jacobianOplus[2].block<3,3>(3,0) = -JVg; // OK
-    _jacobianOplus[2].block<3,3>(6,0) = -JPg; // OK
+    _jacobianOplus[2].block<3,3>(0,0) = (-invJr*eR.transpose()*RightJacobianSO3(JRg*dbg)*JRg).cast<g2o::number_t>(); // OK
+    _jacobianOplus[2].block<3,3>(3,0) = (-JVg).cast<g2o::number_t>(); // OK
+    _jacobianOplus[2].block<3,3>(6,0) = (-JPg).cast<g2o::number_t>(); // OK
 
     // Jacobians wrt Accelerometer 1
     _jacobianOplus[3].setZero();
-    _jacobianOplus[3].block<3,3>(3,0) = -JVa; // OK
-    _jacobianOplus[3].block<3,3>(6,0) = -JPa; // OK
+    _jacobianOplus[3].block<3,3>(3,0) = (-JVa).cast<g2o::number_t>(); // OK
+    _jacobianOplus[3].block<3,3>(6,0) = (-JPa).cast<g2o::number_t>(); // OK
 
     // Jacobians wrt Pose 2
     _jacobianOplus[4].setZero();
     // rotation
-    _jacobianOplus[4].block<3,3>(0,0) = invJr; // OK
+    _jacobianOplus[4].block<3,3>(0,0) = (invJr).cast<g2o::number_t>(); // OK
     // translation
-    _jacobianOplus[4].block<3,3>(6,3) = Rbw1*Rwb2; // OK
+    _jacobianOplus[4].block<3,3>(6,3) = (Rbw1*Rwb2).cast<g2o::number_t>(); // OK
 
     // Jacobians wrt Velocity 2
     _jacobianOplus[5].setZero();
-    _jacobianOplus[5].block<3,3>(3,0) = Rbw1; // OK
+    _jacobianOplus[5].block<3,3>(3,0) = (Rbw1).cast<g2o::number_t>(); // OK
 }
 
 EdgeInertialGS::EdgeInertialGS(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<double>()),
@@ -609,7 +609,7 @@ EdgeInertialGS::EdgeInertialGS(IMU::Preintegrated *pInt):JRg(pInt->JRg.cast<doub
         if(eigs[i]<1e-12)
             eigs[i]=0;
     Info = es.eigenvectors()*eigs.asDiagonal()*es.eigenvectors().transpose();
-    setInformation(Info);
+    setInformation(Info.cast<g2o::number_t>());
 }
 
 
@@ -636,7 +636,7 @@ void EdgeInertialGS::computeError()
     const Eigen::Vector3d ev = VP1->estimate().Rwb.transpose()*(s*(VV2->estimate() - VV1->estimate()) - g*dt) - dV;
     const Eigen::Vector3d ep = VP1->estimate().Rwb.transpose()*(s*(VP2->estimate().twb - VP1->estimate().twb - VV1->estimate()*dt) - g*dt*dt/2) - dP;
 
-    _error << er, ev, ep;
+    _error << er.cast<g2o::number_t>(), ev.cast<g2o::number_t>(), ep.cast<g2o::number_t>();
 }
 
 void EdgeInertialGS::linearizeOplus()
@@ -672,49 +672,49 @@ void EdgeInertialGS::linearizeOplus()
     // Jacobians wrt Pose 1
     _jacobianOplus[0].setZero();
      // rotation
-    _jacobianOplus[0].block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1;
-    _jacobianOplus[0].block<3,3>(3,0) = Sophus::SO3d::hat(Rbw1*(s*(VV2->estimate() - VV1->estimate()) - g*dt));
-    _jacobianOplus[0].block<3,3>(6,0) = Sophus::SO3d::hat(Rbw1*(s*(VP2->estimate().twb - VP1->estimate().twb
-                                                   - VV1->estimate()*dt) - 0.5*g*dt*dt));
+    _jacobianOplus[0].block<3,3>(0,0) = (-invJr*Rwb2.transpose()*Rwb1).cast<g2o::number_t>();
+    _jacobianOplus[0].block<3,3>(3,0) = (Sophus::SO3d::hat(Rbw1*(s*(VV2->estimate() - VV1->estimate()) - g*dt))).cast<g2o::number_t>();
+    _jacobianOplus[0].block<3,3>(6,0) = (Sophus::SO3d::hat(Rbw1*(s*(VP2->estimate().twb - VP1->estimate().twb
+                                                   - VV1->estimate()*dt) - 0.5*g*dt*dt))).cast<g2o::number_t>();
     // translation
-    _jacobianOplus[0].block<3,3>(6,3) = Eigen::DiagonalMatrix<double,3>(-s,-s,-s);
+    _jacobianOplus[0].block<3,3>(6,3) = (-s*Eigen::Matrix3d::Identity()).cast<g2o::number_t>();
 
     // Jacobians wrt Velocity 1
     _jacobianOplus[1].setZero();
-    _jacobianOplus[1].block<3,3>(3,0) = -s*Rbw1;
-    _jacobianOplus[1].block<3,3>(6,0) = -s*Rbw1*dt;
+    _jacobianOplus[1].block<3,3>(3,0) = (-s*Rbw1).cast<g2o::number_t>();
+    _jacobianOplus[1].block<3,3>(6,0) = (-s*Rbw1*dt).cast<g2o::number_t>();
 
     // Jacobians wrt Gyro bias
     _jacobianOplus[2].setZero();
-    _jacobianOplus[2].block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3(JRg*dbg)*JRg;
-    _jacobianOplus[2].block<3,3>(3,0) = -JVg;
-    _jacobianOplus[2].block<3,3>(6,0) = -JPg;
+    _jacobianOplus[2].block<3,3>(0,0) = (-invJr*eR.transpose()*RightJacobianSO3(JRg*dbg)*JRg).cast<g2o::number_t>();
+    _jacobianOplus[2].block<3,3>(3,0) = (-JVg).cast<g2o::number_t>();
+    _jacobianOplus[2].block<3,3>(6,0) = (-JPg).cast<g2o::number_t>();
 
     // Jacobians wrt Accelerometer bias
     _jacobianOplus[3].setZero();
-    _jacobianOplus[3].block<3,3>(3,0) = -JVa;
-    _jacobianOplus[3].block<3,3>(6,0) = -JPa;
+    _jacobianOplus[3].block<3,3>(3,0) = (-JVa).cast<g2o::number_t>();
+    _jacobianOplus[3].block<3,3>(6,0) = (-JPa).cast<g2o::number_t>();
 
     // Jacobians wrt Pose 2
     _jacobianOplus[4].setZero();
     // rotation
-    _jacobianOplus[4].block<3,3>(0,0) = invJr;
+    _jacobianOplus[4].block<3,3>(0,0) = (invJr).cast<g2o::number_t>();
     // translation
-    _jacobianOplus[4].block<3,3>(6,3) = s*Rbw1*Rwb2;
+    _jacobianOplus[4].block<3,3>(6,3) = (s*Rbw1*Rwb2).cast<g2o::number_t>();
 
     // Jacobians wrt Velocity 2
     _jacobianOplus[5].setZero();
-    _jacobianOplus[5].block<3,3>(3,0) = s*Rbw1;
+    _jacobianOplus[5].block<3,3>(3,0) = (s*Rbw1).cast<g2o::number_t>();
 
     // Jacobians wrt Gravity direction
     _jacobianOplus[6].setZero();
-    _jacobianOplus[6].block<3,2>(3,0) = -Rbw1*dGdTheta*dt;
-    _jacobianOplus[6].block<3,2>(6,0) = -0.5*Rbw1*dGdTheta*dt*dt;
+    _jacobianOplus[6].block<3,2>(3,0) = (-Rbw1*dGdTheta*dt).cast<g2o::number_t>();
+    _jacobianOplus[6].block<3,2>(6,0) = (-0.5*Rbw1*dGdTheta*dt*dt).cast<g2o::number_t>();
 
     // Jacobians wrt scale factor
     _jacobianOplus[7].setZero();
-    _jacobianOplus[7].block<3,1>(3,0) = Rbw1*(VV2->estimate()-VV1->estimate());
-    _jacobianOplus[7].block<3,1>(6,0) = Rbw1*(VP2->estimate().twb-VP1->estimate().twb-VV1->estimate()*dt);
+    _jacobianOplus[7].block<3,1>(3,0) = (Rbw1*(VV2->estimate()-VV1->estimate())).cast<g2o::number_t>();
+    _jacobianOplus[7].block<3,1>(6,0) = (Rbw1*(VP2->estimate().twb-VP1->estimate().twb-VV1->estimate()*dt)).cast<g2o::number_t>();
 }
 
 EdgePriorPoseImu::EdgePriorPoseImu(ConstraintPoseImu *c)
@@ -725,7 +725,7 @@ EdgePriorPoseImu::EdgePriorPoseImu(ConstraintPoseImu *c)
     vwb = c->vwb;
     bg = c->bg;
     ba = c->ba;
-    setInformation(c->H);
+    setInformation(c->H.cast<g2o::number_t>());
 }
 
 void EdgePriorPoseImu::computeError()
@@ -741,7 +741,7 @@ void EdgePriorPoseImu::computeError()
     const Eigen::Vector3d ebg = VG->estimate() - bg;
     const Eigen::Vector3d eba = VA->estimate() - ba;
 
-    _error << er, et, ev, ebg, eba;
+    _error << er.cast<g2o::number_t>(), et.cast<g2o::number_t>(), ev.cast<g2o::number_t>(), ebg.cast<g2o::number_t>(), eba.cast<g2o::number_t>();
 }
 
 void EdgePriorPoseImu::linearizeOplus()
@@ -749,27 +749,27 @@ void EdgePriorPoseImu::linearizeOplus()
     const VertexPose* VP = static_cast<const VertexPose*>(_vertices[0]);
     const Eigen::Vector3d er = LogSO3(Rwb.transpose()*VP->estimate().Rwb);
     _jacobianOplus[0].setZero();
-    _jacobianOplus[0].block<3,3>(0,0) = InverseRightJacobianSO3(er);
-    _jacobianOplus[0].block<3,3>(3,3) = Rwb.transpose()*VP->estimate().Rwb;
+    _jacobianOplus[0].block<3,3>(0,0) = (InverseRightJacobianSO3(er)).cast<g2o::number_t>();
+    _jacobianOplus[0].block<3,3>(3,3) = (Rwb.transpose()*VP->estimate().Rwb).cast<g2o::number_t>();
     _jacobianOplus[1].setZero();
-    _jacobianOplus[1].block<3,3>(6,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplus[1].block<3,3>(6,0) = (Eigen::Matrix3d::Identity()).cast<g2o::number_t>();
     _jacobianOplus[2].setZero();
-    _jacobianOplus[2].block<3,3>(9,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplus[2].block<3,3>(9,0) = (Eigen::Matrix3d::Identity()).cast<g2o::number_t>();
     _jacobianOplus[3].setZero();
-    _jacobianOplus[3].block<3,3>(12,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplus[3].block<3,3>(12,0) = (Eigen::Matrix3d::Identity()).cast<g2o::number_t>();
 }
 
 void EdgePriorAcc::linearizeOplus()
 {
     // Jacobian wrt bias
-    _jacobianOplusXi.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplusXi.block<3,3>(0,0) = (Eigen::Matrix3d::Identity()).cast<g2o::number_t>();
 
 }
 
 void EdgePriorGyro::linearizeOplus()
 {
     // Jacobian wrt bias
-    _jacobianOplusXi.block<3,3>(0,0) = Eigen::Matrix3d::Identity();
+    _jacobianOplusXi.block<3,3>(0,0) = (Eigen::Matrix3d::Identity()).cast<g2o::number_t>();
 
 }
 

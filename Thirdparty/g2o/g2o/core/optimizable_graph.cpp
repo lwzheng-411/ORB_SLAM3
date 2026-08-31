@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, H. Strasdat, W. Burgard
 // All rights reserved.
@@ -94,14 +95,14 @@ namespace g2o {
     return 0;
   }
 
-  bool OptimizableGraph::Vertex::setEstimateData(const double* v)
+  bool OptimizableGraph::Vertex::setEstimateData(const number_t* v)
   {
     bool ret = setEstimateDataImpl(v);
     updateCache();
     return ret;
   }
 
-  bool OptimizableGraph::Vertex::getEstimateData(double *) const
+  bool OptimizableGraph::Vertex::getEstimateData(number_t *) const
   {
     return false;
   }
@@ -111,14 +112,14 @@ namespace g2o {
     return -1;
   }
 
-  bool OptimizableGraph::Vertex::setMinimalEstimateData(const double* v)
+  bool OptimizableGraph::Vertex::setMinimalEstimateData(const number_t* v)
   {
     bool ret = setMinimalEstimateDataImpl(v);
     updateCache();
     return ret;
   }
 
-  bool OptimizableGraph::Vertex::getMinimalEstimateData(double *) const
+  bool OptimizableGraph::Vertex::getMinimalEstimateData(number_t *) const
   {
     return false;
   }
@@ -201,12 +202,12 @@ namespace g2o {
     return true;
   }
 
-  bool OptimizableGraph::Edge::setMeasurementData(const double *)
+  bool OptimizableGraph::Edge::setMeasurementData(const number_t *)
   {
     return false;
   }
 
-  bool OptimizableGraph::Edge::getMeasurementData(double *) const
+  bool OptimizableGraph::Edge::getMeasurementData(number_t *) const
   {
     return false;
   }
@@ -286,9 +287,9 @@ namespace g2o {
 
   int OptimizableGraph::optimize(int /*iterations*/, bool /*online*/) {return 0;}
 
-double OptimizableGraph::chi2() const
+number_t OptimizableGraph::chi2() const
 {
-  double chi = 0.0;
+  number_t chi = 0.0;
   for (OptimizableGraph::EdgeSet::const_iterator it = this->edges().begin(); it != this->edges().end(); ++it) {
     const OptimizableGraph::Edge* e = static_cast<const OptimizableGraph::Edge*>(*it);
     chi += e->chi2();
@@ -867,10 +868,10 @@ void OptimizableGraph::clearParameters()
 bool OptimizableGraph::verifyInformationMatrices(bool verbose) const
 {
   bool allEdgeOk = true;
-  SelfAdjointEigenSolver<MatrixXd> eigenSolver;
+  SelfAdjointEigenSolver<MatrixX> eigenSolver;
   for (OptimizableGraph::EdgeSet::const_iterator it = edges().begin(); it != edges().end(); ++it) {
     OptimizableGraph::Edge* e = static_cast<OptimizableGraph::Edge*>(*it);
-    Eigen::MatrixXd::MapType information(e->informationData(), e->dimension(), e->dimension());
+    MatrixX::MapType information(e->informationData(), e->dimension(), e->dimension());
     // test on symmetry
     bool isSymmetric = information.transpose() == information;
     bool okay = isSymmetric;

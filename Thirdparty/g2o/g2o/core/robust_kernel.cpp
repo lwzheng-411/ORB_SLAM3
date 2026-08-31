@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -33,12 +34,12 @@ RobustKernel::RobustKernel() :
 {
 }
 
-RobustKernel::RobustKernel(double delta) :
+RobustKernel::RobustKernel(number_t delta) :
   _delta(delta)
 {
 }
 
-void RobustKernel::setDelta(double delta)
+void RobustKernel::setDelta(number_t delta)
 {
   _delta = delta;
 }

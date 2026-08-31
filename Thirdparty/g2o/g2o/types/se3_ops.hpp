@@ -24,9 +24,9 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-  Matrix3d skew(const Vector3d&v)
+  Matrix3 skew(const Vector3&v)
   {
-    Matrix3d m;
+    Matrix3 m;
     m.fill(0.);
     m(0,1)  = -v(2);
     m(0,2)  =  v(1);
@@ -37,44 +37,44 @@
     return m;
   }
 
-  Vector3d deltaR(const Matrix3d& R)
+  Vector3 deltaR(const Matrix3& R)
   {
-    Vector3d v;
+    Vector3 v;
     v(0)=R(2,1)-R(1,2);
     v(1)=R(0,2)-R(2,0);
     v(2)=R(1,0)-R(0,1);
     return v;
   }
 
-  Vector2d project(const Vector3d& v)
+  Vector2 project(const Vector3& v)
   {
-    Vector2d res;
+    Vector2 res;
     res(0) = v(0)/v(2);
     res(1) = v(1)/v(2);
     return res;
   }
 
-  Vector3d project(const Vector4d& v)
+  Vector3 project(const Vector4& v)
   {
-    Vector3d res;
+    Vector3 res;
     res(0) = v(0)/v(3);
     res(1) = v(1)/v(3);
     res(2) = v(2)/v(3);
     return res;
   }
 
-  Vector3d unproject(const Vector2d& v)
+  Vector3 unproject(const Vector2& v)
   {
-    Vector3d res;
+    Vector3 res;
     res(0) = v(0);
     res(1) = v(1);
     res(2) = 1;
     return res;
   }
 
-  Vector4d unproject(const Vector3d& v)
+  Vector4 unproject(const Vector3& v)
   {
-    Vector4d res;
+    Vector4 res;
     res(0) = v(0);
     res(1) = v(1);
     res(2) = v(2);

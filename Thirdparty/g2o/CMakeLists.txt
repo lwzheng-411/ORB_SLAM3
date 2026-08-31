@@ -6,6 +6,14 @@ PROJECT(g2o)
 SET(g2o_C_FLAGS)
 SET(g2o_CXX_FLAGS)
 
+# Optional fp32 scalar build (see g2o/core/scalar.h). Produces libg2o_fp32.so
+# so the stock libg2o.so double build is never overwritten.
+OPTION(G2O_SCALAR_FLOAT "Build g2o with number_t = float" OFF)
+IF(G2O_SCALAR_FLOAT)
+  ADD_DEFINITIONS(-DG2O_SCALAR_FLOAT)
+  MESSAGE(STATUS "g2o scalar type: float (output libg2o_fp32)")
+ENDIF(G2O_SCALAR_FLOAT)
+
 # default built type
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -176,3 +184,7 @@ g2o/stuff/string_tools.cpp
 g2o/stuff/property.cpp       
 g2o/stuff/property.h       
 )
+
+IF(G2O_SCALAR_FLOAT)
+  SET_TARGET_PROPERTIES(g2o PROPERTIES OUTPUT_NAME g2o_fp32)
+ENDIF(G2O_SCALAR_FLOAT)

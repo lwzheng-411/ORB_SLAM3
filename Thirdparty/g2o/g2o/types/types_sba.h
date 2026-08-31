@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 Kurt Konolige
 // All rights reserved.
@@ -37,7 +38,7 @@ namespace g2o {
 /**
  * \brief Point vertex, XYZ
  */
- class VertexSBAPointXYZ : public BaseVertex<3, Vector3d>
+ class VertexSBAPointXYZ : public BaseVertex<3, Vector3>
 {
   public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW    
@@ -49,9 +50,9 @@ namespace g2o {
       _estimate.fill(0.);
     }
 
-    virtual void oplusImpl(const double* update)
+    virtual void oplusImpl(const number_t* update)
     {
-      Eigen::Map<const Vector3d> v(update);
+      Eigen::Map<const Vector3> v(update);
       _estimate += v;
     }
 };

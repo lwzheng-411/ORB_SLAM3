@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 H. Strasdat
 // All rights reserved.
@@ -123,7 +124,7 @@ namespace g2o {
   /**Sim3ProjectXYZ*/
 
   EdgeSim3ProjectXYZ::EdgeSim3ProjectXYZ() :
-  BaseBinaryEdge<2, Vector2d, VertexSBAPointXYZ, VertexSim3Expmap>()
+  BaseBinaryEdge<2, Vector2, VertexSBAPointXYZ, VertexSim3Expmap>()
   {
   }
 
@@ -159,7 +160,7 @@ namespace g2o {
 /**InverseSim3ProjectXYZ*/
 
   EdgeInverseSim3ProjectXYZ::EdgeInverseSim3ProjectXYZ() :
-  BaseBinaryEdge<2, Vector2d, VertexSBAPointXYZ, VertexSim3Expmap>()
+  BaseBinaryEdge<2, Vector2, VertexSBAPointXYZ, VertexSim3Expmap>()
   {
   }
 
@@ -199,15 +200,15 @@ namespace g2o {
 //    Sim3 T = vj->estimate();
 
 //    VertexPointXYZ* vi = static_cast<VertexPointXYZ*>(_vertices[0]);
-//    Vector3d xyz = vi->estimate();
-//    Vector3d xyz_trans = T.map(xyz);
+//    Vector3 xyz = vi->estimate();
+//    Vector3 xyz_trans = T.map(xyz);
 
-//    double x = xyz_trans[0];
-//    double y = xyz_trans[1];
-//    double z = xyz_trans[2];
-//    double z_2 = z*z;
+//    number_t x = xyz_trans[0];
+//    number_t y = xyz_trans[1];
+//    number_t z = xyz_trans[2];
+//    number_t z_2 = z*z;
 
-//    Matrix<double,2,3> tmp;
+//    Matrix<number_t,2,3> tmp;
 //    tmp(0,0) = _focal_length(0);
 //    tmp(0,1) = 0;
 //    tmp(0,2) = -x/z*_focal_length(0);

@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 #ifndef SE3mat_H
 #define SE3mat_H
 
@@ -10,15 +11,15 @@ class SE3mat
 {
 public:
     SE3mat(){
-        R = Eigen::Matrix3d::Identity();
+        R = Matrix3::Identity();
         t.setZero();
     }
 
-    SE3mat(const Eigen::Matrix3d &R_, const Eigen::Vector3d &t_):R(R_),t(t_){}
+    SE3mat(const Matrix3 &R_, const Vector3 &t_):R(R_),t(t_){}
 
-    void Retract(const Eigen::Vector3d dr, const Eigen::Vector3d &dt);
+    void Retract(const Vector3 dr, const Vector3 &dt);
 
-    inline Eigen::Vector3d operator* (const Eigen::Vector3d& v) const {
+    inline Vector3 operator* (const Vector3& v) const {
       return R*v + t;
     }
 
@@ -29,17 +30,17 @@ public:
     }
 
     inline SE3mat inverse() const{
-      Eigen::Matrix3d Rt = R.transpose();
+      Matrix3 Rt = R.transpose();
       return SE3mat(Rt,-Rt*t);
     }
 
 protected:
-    Eigen::Vector3d t;
-    Eigen::Matrix3d R;
+    Vector3 t;
+    Matrix3 R;
 
 public:
-    static Eigen::Matrix3d ExpSO3(const Eigen::Vector3d r);
-    static Eigen::Vector3d LogSO3(const Eigen::Matrix3d R);
+    static Matrix3 ExpSO3(const Vector3 r);
+    static Vector3 LogSO3(const Matrix3 R);
 };
 
 }//namespace g2o

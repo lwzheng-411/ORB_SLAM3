@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -97,7 +98,7 @@ OutputIterator readFloats(const char* str, OutputIterator out)
   char* cl  = (char*)str;
   char* cle = cl;
   while (1) {
-    double val = strtod(cl, &cle);
+    number_t val = strtod(cl, &cle);
     if (cl == cle)
       break;
     *out++ = val;

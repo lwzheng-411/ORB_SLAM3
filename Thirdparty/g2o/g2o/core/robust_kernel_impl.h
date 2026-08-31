@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -45,15 +46,15 @@ namespace g2o {
        * construct the scaled kernel ontop of another kernel which might be shared accross
        * several scaled kernels
        */
-      explicit RobustKernelScaleDelta(const RobustKernelPtr& kernel, double delta = 1.);
-      explicit RobustKernelScaleDelta(double delta = 1.);
+      explicit RobustKernelScaleDelta(const RobustKernelPtr& kernel, number_t delta = 1.);
+      explicit RobustKernelScaleDelta(number_t delta = 1.);
 
       //! return the underlying kernel
       const RobustKernelPtr kernel() const { return _kernel;}
       //! use another kernel for the underlying operation
       void setKernel(const RobustKernelPtr& ptr);
 
-      void robustify(double error, Eigen::Vector3d& rho) const;
+      void robustify(number_t error, Vector3& rho) const;
 
     protected:
       RobustKernelPtr _kernel;
@@ -76,9 +77,9 @@ namespace g2o {
   class  RobustKernelHuber : public RobustKernel
   {
     public:
-      virtual void setDelta(double delta);
-      virtual void setDeltaSqr(const double &delta, const double &deltaSqr);
-      virtual void robustify(double e2, Eigen::Vector3d& rho) const;
+      virtual void setDelta(number_t delta);
+      virtual void setDeltaSqr(const number_t &delta, const number_t &deltaSqr);
+      virtual void robustify(number_t e2, Vector3& rho) const;
 
     private:
       float dsqr;
@@ -99,8 +100,8 @@ namespace g2o {
   {
     public:
 
-      virtual void setDeltaSqr(const double &deltaSqr, const double &inv);
-      virtual void robustify(double e2, Eigen::Vector3d& rho) const;
+      virtual void setDeltaSqr(const number_t &deltaSqr, const number_t &inv);
+      virtual void robustify(number_t e2, Vector3& rho) const;
     private:
       float _deltaSqr;
       float _invDeltaSqr;
@@ -121,7 +122,7 @@ namespace g2o {
   class  RobustKernelPseudoHuber : public RobustKernel
   {
     public:
-      virtual void robustify(double e2, Eigen::Vector3d& rho) const;
+      virtual void robustify(number_t e2, Vector3& rho) const;
   };
 
   /**
@@ -135,7 +136,7 @@ namespace g2o {
   class  RobustKernelCauchy : public RobustKernel
   {
     public:
-      virtual void robustify(double e2, Eigen::Vector3d& rho) const;
+      virtual void robustify(number_t e2, Vector3& rho) const;
   };
 
   /**
@@ -146,7 +147,7 @@ namespace g2o {
   class  RobustKernelSaturated : public RobustKernel
   {
     public:
-      virtual void robustify(double e2, Eigen::Vector3d& rho) const;
+      virtual void robustify(number_t e2, Vector3& rho) const;
   };
 
   /**
@@ -159,7 +160,7 @@ namespace g2o {
   class  RobustKernelDCS : public RobustKernel
   {
     public:
-      virtual void robustify(double e2, Eigen::Vector3d& rho) const;
+      virtual void robustify(number_t e2, Vector3& rho) const;
   };
 
 } // end namespace g2o

@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -50,7 +51,7 @@ namespace g2o {
   class  EstimatePropagatorCost {
     public:
       EstimatePropagatorCost (SparseOptimizer* graph);
-      virtual double operator()(OptimizableGraph::Edge* edge, const OptimizableGraph::VertexSet& from, OptimizableGraph::Vertex* to_) const;
+      virtual number_t operator()(OptimizableGraph::Edge* edge, const OptimizableGraph::VertexSet& from, OptimizableGraph::Vertex* to_) const;
       virtual const char* name() const { return "spanning tree";}
     protected:
       SparseOptimizer* _graph;
@@ -65,7 +66,7 @@ namespace g2o {
   class  EstimatePropagatorCostOdometry : public EstimatePropagatorCost {
     public:
       EstimatePropagatorCostOdometry(SparseOptimizer* graph);
-      virtual double operator()(OptimizableGraph::Edge* edge, const OptimizableGraph::VertexSet& from_, OptimizableGraph::Vertex* to_) const;
+      virtual number_t operator()(OptimizableGraph::Edge* edge, const OptimizableGraph::VertexSet& from_, OptimizableGraph::Vertex* to_) const;
       virtual const char* name() const { return "odometry";}
   };
 
@@ -95,7 +96,7 @@ namespace g2o {
       /**
        * \brief priority queue for AdjacencyMapEntry
        */
-      class PriorityQueue : public std::multimap<double, AdjacencyMapEntry*> {
+      class PriorityQueue : public std::multimap<number_t, AdjacencyMapEntry*> {
         public:
           void push(AdjacencyMapEntry* entry);
           AdjacencyMapEntry* pop();
@@ -113,14 +114,14 @@ namespace g2o {
           OptimizableGraph::Vertex* child() const {return _child;}
           const OptimizableGraph::VertexSet& parent() const {return _parent;}
           OptimizableGraph::Edge* edge() const {return _edge;}
-          double distance() const {return _distance;}
+          number_t distance() const {return _distance;}
           int frontierLevel() const { return _frontierLevel;}
 
         protected:
           OptimizableGraph::Vertex* _child;
           OptimizableGraph::VertexSet _parent;
           OptimizableGraph::Edge* _edge;
-          double _distance;
+          number_t _distance;
           int _frontierLevel;
         private: // for PriorityQueue
           bool inQueue;
@@ -151,8 +152,8 @@ namespace g2o {
       void propagate(OptimizableGraph::Vertex* v, 
           const EstimatePropagator::PropagateCost& cost, 
           const EstimatePropagator::PropagateAction& action = PropagateAction(),
-          double maxDistance=std::numeric_limits<double>::max(), 
-          double maxEdgeCost=std::numeric_limits<double>::max());
+          number_t maxDistance=std::numeric_limits<number_t>::max(), 
+          number_t maxEdgeCost=std::numeric_limits<number_t>::max());
 
       /**
        * same as above but starting to propagate from a set of vertices instead of just a single one.
@@ -160,8 +161,8 @@ namespace g2o {
       void propagate(OptimizableGraph::VertexSet& vset, 
           const EstimatePropagator::PropagateCost& cost, 
           const EstimatePropagator::PropagateAction& action = PropagateAction(),
-          double maxDistance=std::numeric_limits<double>::max(), 
-          double maxEdgeCost=std::numeric_limits<double>::max());
+          number_t maxDistance=std::numeric_limits<number_t>::max(), 
+          number_t maxEdgeCost=std::numeric_limits<number_t>::max());
 
     protected:
       void reset();

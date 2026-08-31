@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -52,7 +53,7 @@ namespace g2o {
   {
     public:
       RobustKernel();
-      explicit RobustKernel(double delta);
+      explicit RobustKernel(number_t delta);
       virtual ~RobustKernel() {}
       /**
        * compute the scaling factor for a error:
@@ -62,17 +63,17 @@ namespace g2o {
        * rho[1]: First derivative of the scaling function
        * rho[2]: Second derivative of the scaling function
        */
-      virtual void robustify(double squaredError, Eigen::Vector3d& rho) const = 0;
+      virtual void robustify(number_t squaredError, Vector3& rho) const = 0;
 
       /**
        * set the window size of the error. A squared error above delta^2 is considered
        * as outlier in the data.
        */
-      virtual void setDelta(double delta);
-      double delta() const { return _delta;}
+      virtual void setDelta(number_t delta);
+      number_t delta() const { return _delta;}
 
     protected:
-      double _delta;
+      number_t _delta;
   };
   typedef std::tr1::shared_ptr<RobustKernel> RobustKernelPtr;
 

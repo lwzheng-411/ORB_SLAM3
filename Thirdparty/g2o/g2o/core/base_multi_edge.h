@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, H. Strasdat, W. Burgard
 // All rights reserved.
@@ -55,7 +56,7 @@ namespace g2o {
        * \brief helper for mapping the Hessian memory of the upper triangular block
        */
       struct HessianHelper {
-        Eigen::Map<MatrixXd> matrix;     ///< the mapped memory
+        Eigen::Map<MatrixX> matrix;     ///< the mapped memory
         bool transposed;          ///< the block has to be transposed
         HessianHelper() : matrix(0, 0, 0), transposed(false) {}
       };
@@ -63,10 +64,10 @@ namespace g2o {
     public:
       static const int Dimension = BaseEdge<D,E>::Dimension;
       typedef typename BaseEdge<D,E>::Measurement Measurement;
-      typedef MatrixXd::MapType JacobianType;
+      typedef MatrixX::MapType JacobianType;
       typedef typename BaseEdge<D,E>::ErrorVector ErrorVector;
       typedef typename BaseEdge<D,E>::InformationType InformationType;
-      typedef Eigen::Map<MatrixXd, MatrixXd::Flags & AlignedBit ? Aligned : Unaligned > HessianBlockType;
+      typedef Eigen::Map<MatrixX, MatrixX::Flags & AlignedBit ? Aligned : Unaligned > HessianBlockType;
 
       BaseMultiEdge() : BaseEdge<D,E>()
       {
@@ -86,7 +87,7 @@ namespace g2o {
 
       virtual void constructQuadraticForm() ;
 
-      virtual void mapHessianMemory(double* d, int i, int j, bool rowMajor);
+      virtual void mapHessianMemory(number_t* d, int i, int j, bool rowMajor);
 
       using BaseEdge<D,E>::computeError;
 

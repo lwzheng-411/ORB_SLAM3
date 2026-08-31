@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, H. Strasdat, W. Burgard
 // All rights reserved.
@@ -46,7 +47,7 @@ namespace g2o {
       static const int Dimension = BaseEdge<D, E>::Dimension;
       typedef typename BaseEdge<D,E>::Measurement Measurement;
       typedef VertexXi VertexXiType;
-      typedef typename Matrix<double, D, VertexXiType::Dimension>::AlignedMapType JacobianXiOplusType;
+      typedef typename Matrix<number_t, D, VertexXiType::Dimension>::AlignedMapType JacobianXiOplusType;
       typedef typename BaseEdge<D,E>::ErrorVector ErrorVector;
       typedef typename BaseEdge<D,E>::InformationType InformationType;
 
@@ -75,7 +76,7 @@ namespace g2o {
 
       virtual void initialEstimate(const OptimizableGraph::VertexSet& from, OptimizableGraph::Vertex* to);
 
-      virtual void mapHessianMemory(double*, int, int, bool) {assert(0 && "BaseUnaryEdge does not map memory of the Hessian");}
+      virtual void mapHessianMemory(number_t*, int, int, bool) {assert(0 && "BaseUnaryEdge does not map memory of the Hessian");}
 
       using BaseEdge<D,E>::resize;
       using BaseEdge<D,E>::computeError;

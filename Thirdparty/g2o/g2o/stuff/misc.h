@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -75,7 +76,7 @@ inline T hypot_sqr(T x, T y)
 /**
  * convert from degree to radian
  */
-inline double deg2rad(double degree)
+inline number_t deg2rad(number_t degree)
 {
   return degree * 0.01745329251994329576;
 }
@@ -83,7 +84,7 @@ inline double deg2rad(double degree)
 /**
  * convert from radian to degree
  */
-inline double rad2deg(double rad)
+inline number_t rad2deg(number_t rad)
 {
   return rad * 57.29577951308232087721;
 }
@@ -91,12 +92,12 @@ inline double rad2deg(double rad)
 /**
  * normalize the angle
  */
-inline double normalize_theta(double theta)
+inline number_t normalize_theta(number_t theta)
 {
   if (theta >= -M_PI && theta < M_PI)
     return theta;
   
-  double multiplier = floor(theta / (2*M_PI));
+  number_t multiplier = floor(theta / (2*M_PI));
   theta = theta - multiplier*2*M_PI;
   if (theta >= M_PI)
     theta -= 2*M_PI;
@@ -109,7 +110,7 @@ inline double normalize_theta(double theta)
 /**
  * inverse of an angle, i.e., +180 degree
  */
-inline double inverse_theta(double th)
+inline number_t inverse_theta(number_t th)
 {
   return normalize_theta(th + M_PI);
 }
@@ -117,9 +118,9 @@ inline double inverse_theta(double th)
 /**
  * average two angles
  */
-inline double average_angle(double theta1, double theta2)
+inline number_t average_angle(number_t theta1, number_t theta2)
 {
-  double x, y;
+  number_t x, y;
 
   x = cos(theta1) + cos(theta2);
   y = sin(theta1) + sin(theta2);
@@ -174,7 +175,7 @@ inline T wrap(T l, T x, T u)
 /**
  * tests whether there is a NaN in the array
  */
-inline bool arrayHasNaN(const double* array, int size, int* nanIndex = 0)
+inline bool arrayHasNaN(const number_t* array, int size, int* nanIndex = 0)
 {
   for (int i = 0; i < size; ++i)
     if (g2o_isnan(array[i])) {

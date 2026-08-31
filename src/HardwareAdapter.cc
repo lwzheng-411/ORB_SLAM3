@@ -44,33 +44,64 @@ public:
     }
 
     void Enqueue(DumpPayload payload, std::string dir) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            queue_.push({std::move(payload), std::move(dir)});
+        std::unique_lock<std::mutex> lock(mutex_);
+        capacity_cv_.wait(lock, [this]() {
+            return !running_ || queue_.size() + active_writes_ < kMaxPendingWrites;
+        });
+        if (!running_) {
+            throw std::runtime_error("JSON writer is already stopped");
         }
+        queue_.push({std::move(payload), std::move(dir)});
+        lock.unlock();
         cv_.notify_one();
     }
 
+    void Drain() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        drained_cv_.wait(lock, [this]() {
+            return queue_.empty() && active_writes_ == 0;
+        });
+    }
+
     void Stop() {
-        running_ = false;
-        cv_.notify_one();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            running_ = false;
+        }
+        cv_.notify_all();
+        capacity_cv_.notify_all();
         if (worker_.joinable()) worker_.join();
     }
 
 private:
     AsyncJsonWriter() : running_(true) {
         worker_ = std::thread([this]() {
-            while (running_ || !queue_.empty()) {
+            while (true) {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [this]() { return !queue_.empty() || !running_; });
-                while (!queue_.empty()) {
-                    auto task = std::move(queue_.front());
-                    queue_.pop();
-                    lock.unlock();
+                if (queue_.empty() && !running_) break;
+
+                auto task = std::move(queue_.front());
+                queue_.pop();
+                ++active_writes_;
+                lock.unlock();
+                try {
                     DumpAllJson(task.first, task.second);
-                    lock.lock();
+                } catch (const std::exception& error) {
+                    std::cerr << "[ASYNC_JSON] write failed for " << task.second
+                              << ": " << error.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "[ASYNC_JSON] write failed for " << task.second
+                              << ": unknown exception" << std::endl;
+                }
+                lock.lock();
+                --active_writes_;
+                capacity_cv_.notify_all();
+                if (queue_.empty() && active_writes_ == 0) {
+                    drained_cv_.notify_all();
                 }
             }
+            drained_cv_.notify_all();
         });
     }
     ~AsyncJsonWriter() { Stop(); }
@@ -79,7 +110,11 @@ private:
     std::queue<std::pair<DumpPayload, std::string>> queue_;
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::atomic<bool> running_;
+    std::condition_variable drained_cv_;
+    std::condition_variable capacity_cv_;
+    static constexpr std::size_t kMaxPendingWrites = 2;
+    std::size_t active_writes_ = 0;
+    bool running_;
 };
 } // namespace
 
@@ -90,6 +125,11 @@ void FlushPendingJson() {
         g_pending_json_payload = DumpPayload();  // 清空
         g_pending_json_dir.clear();
     }
+}
+
+void DrainAsyncJsonWrites() {
+    FlushPendingJson();
+    AsyncJsonWriter::Instance().Drain();
 }
 
 #ifndef LANDMARK_CAP
@@ -394,7 +434,8 @@ bool RunCpuQrSolver(const std::string& json_dir,
                     const std::string& output_path,
                     const std::string& log_path,
                     bool ba2_done_for_solver,
-                    bool b_large_for_solver) {
+                    bool b_large_for_solver,
+                    bool rec_init_for_solver) {
     // CPU QR solver invocation.
     // Default behavior (interleaved binary): minimal flags <json_dir> --output --huber --max-trails [--n-iter]
     // Legacy measure_cpu_qr binary: set CPU_QR_LEGACY_FLAGS=1 to also pass --online --tsqr --col-phase.
@@ -435,6 +476,9 @@ bool RunCpuQrSolver(const std::string& json_dir,
         std::string tok;
         while (iss >> tok) extra_args.push_back(tok);
     }
+    // Native LocalInertialBA bRecInit applies the IMU Huber kernel to all IMU edges.
+    // Append after CPU_QR_EXTRA_ARGS so the per-call native flag overrides runner defaults.
+    if (rec_init_for_solver) extra_args.push_back("--imu-huber=all");
 
     // ------------------------------------------------------------------
     // Path A: persistent solver IPC (preferred when enabled). Falls through
@@ -525,6 +569,9 @@ bool ParseCpuQrOutput(const std::string& output_path,
             if (k <= 0) continue;
             auto bk = pose_best_k.find(id);
             if (bk != pose_best_k.end() && bk->second >= k) continue;  // already have higher-K
+            // Solver POSE_* records are camera-frame cumulative deltas from
+            // the LBA entry pose: head=translation, tail=so3Log(dR).
+            // The apply path below expects that same [dt, omega] contract.
             Eigen::Matrix<float, 6, 1> delta;
             for (int i = 0; i < 6; ++i) {
                 if (!(vals >> delta(i))) return false;
@@ -913,6 +960,7 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
         const bool verbose_calls = CpuQrVerboseCalls();
         const bool ba2_done_for_solver = input.map && input.map->GetIniertialBA2();
         const bool b_large_for_solver = input.large;
+        const bool rec_init_for_solver = input.rec_init;
         if (verbose_calls) {
             std::cerr << "[CPU_QR_CALL_BEGIN] seq=" << seq_num
                       << " current_kf=" << input.current_kf->mnId
@@ -929,7 +977,8 @@ HardwareAdapter::LocalBAResult HardwareAdapter::RunLocalBA(
             return cpu_qr_zero_update();
         }
 
-        if (!RunCpuQrSolver(scratch_dir, sw, output_path, log_path, ba2_done_for_solver, b_large_for_solver)) {
+        if (!RunCpuQrSolver(scratch_dir, sw, output_path, log_path,
+                            ba2_done_for_solver, b_large_for_solver, rec_init_for_solver)) {
             std::cerr << "[CPU_QR] solver failed, log: " << log_path << std::endl;
             return cpu_qr_zero_update();
         }
@@ -1504,6 +1553,7 @@ void HardwareAdapter::FillExporter(const LocalBAInput& input,
     // 集合便于查找
     std::set<KeyFrame*> local_set(input.local_kfs.begin(), input.local_kfs.end());
     std::set<KeyFrame*> fixed_set(input.fixed_kfs.begin(), input.fixed_kfs.end());
+    const bool drop_fixed_observations = CpuQrEnvFlag("CPU_QR_NATIVE_DROP_FIXED_OBS");
 
     // 1) 关键帧初值
     for (KeyFrame* kf : input.local_kfs) {
@@ -1543,6 +1593,7 @@ void HardwareAdapter::FillExporter(const LocalBAInput& input,
                 const bool is_local = IsKeyFrameInSet(kf, local_set);
                 const bool is_fixed = IsKeyFrameInSet(kf, fixed_set);
                 if (!is_local && !is_fixed) continue;
+                if (drop_fixed_observations && is_fixed) continue;
                 const int idx = std::get<0>(kv.second);
                 if (idx < 0 || idx >= static_cast<int>(kf->mvKeysUn.size())) continue;
                 if (is_local) ++local_hits;
@@ -1764,4 +1815,3 @@ DumpPayload HardwareAdapter::BuildDumpPayload(const LocalBAInput& input) {
 }
 
 }  // namespace ORB_SLAM3
-

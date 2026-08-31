@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -41,10 +42,10 @@ namespace g2o {
   OptimizationAlgorithmDogleg::OptimizationAlgorithmDogleg(BlockSolverBase* solver) :
     OptimizationAlgorithmWithHessian(solver)
   {
-    _userDeltaInit = _properties.makeProperty<Property<double> >("initialDelta", 1e4);
+    _userDeltaInit = _properties.makeProperty<Property<number_t> >("initialDelta", 1e4);
     _maxTrialsAfterFailure = _properties.makeProperty<Property<int> >("maxTrialsAfterFailure", 100);
-    _initialLambda = _properties.makeProperty<Property<double> >("initialLambda", 1e-7);
-    _lamdbaFactor = _properties.makeProperty<Property<double> >("lambdaFactor", 10.);
+    _initialLambda = _properties.makeProperty<Property<number_t> >("initialLambda", 1e-7);
+    _lamdbaFactor = _properties.makeProperty<Property<number_t> >("lambdaFactor", 10.);
     _delta = _userDeltaInit->value();
     _lastStep = STEP_UNDEFINED;
     _wasPDInAllIterations = true;
@@ -78,7 +79,7 @@ namespace g2o {
       _wasPDInAllIterations = true;
     }
 
-    double t=get_monotonic_time();
+    number_t t=get_monotonic_time();
     _optimizer->computeActiveErrors();
     G2OBatchStatistics* globalStats = G2OBatchStatistics::globalStats();
     if (globalStats) {
@@ -86,24 +87,24 @@ namespace g2o {
       t=get_monotonic_time();
     }
 
-    double currentChi = _optimizer->activeRobustChi2();
+    number_t currentChi = _optimizer->activeRobustChi2();
 
     _solver->buildSystem();
     if (globalStats) {
       globalStats->timeQuadraticForm = get_monotonic_time()-t;
     }
 
-    Eigen::VectorXd::ConstMapType b(_solver->b(), _solver->vectorSize());
+    VectorX::ConstMapType b(_solver->b(), _solver->vectorSize());
 
     // compute alpha
     _auxVector.setZero();
     blockSolver->multiplyHessian(_auxVector.data(), _solver->b());
-    double bNormSquared = b.squaredNorm();
-    double alpha = bNormSquared / _auxVector.dot(b);
+    number_t bNormSquared = b.squaredNorm();
+    number_t alpha = bNormSquared / _auxVector.dot(b);
 
     _hsd = alpha * b;
-    double hsdNorm = _hsd.norm();
-    double hgnNorm = -1.;
+    number_t hsdNorm = _hsd.norm();
+    number_t hgnNorm = -1.;
 
     bool solvedGaussNewton = false;
     bool goodStep = false;
@@ -113,8 +114,8 @@ namespace g2o {
       ++numTries;
 
       if (! solvedGaussNewton) {
-        const double minLambda = 1e-12;
-        const double maxLambda = 1e3;
+        const number_t minLambda = 1e-12;
+        const number_t maxLambda = 1e3;
         solvedGaussNewton = true;
         // apply a damping factor to enforce positive definite Hessian, if the matrix appeared
         // to be not positive definite in at least one iteration before.
@@ -143,10 +144,10 @@ namespace g2o {
         if (!solverOk) {
           return Fail;
         }
-        hgnNorm = Eigen::VectorXd::ConstMapType(_solver->x(), _solver->vectorSize()).norm();
+        hgnNorm = VectorX::ConstMapType(_solver->x(), _solver->vectorSize()).norm();
       }
 
-      Eigen::VectorXd::ConstMapType hgn(_solver->x(), _solver->vectorSize());
+      VectorX::ConstMapType hgn(_solver->x(), _solver->vectorSize());
       assert(hgnNorm >= 0. && "Norm of the GN step is not computed");
 
       if (hgnNorm < _delta) {
@@ -158,13 +159,13 @@ namespace g2o {
         _lastStep = STEP_SD;
       } else {
         _auxVector = hgn - _hsd;  // b - a
-        double c = _hsd.dot(_auxVector);
-        double bmaSquaredNorm = _auxVector.squaredNorm();
-        double beta;
+        number_t c = _hsd.dot(_auxVector);
+        number_t bmaSquaredNorm = _auxVector.squaredNorm();
+        number_t beta;
         if (c <= 0.)
           beta = (-c + sqrt(c*c + bmaSquaredNorm * (_delta*_delta - _hsd.squaredNorm()))) / bmaSquaredNorm;
         else {
-          double hsdSqrNorm = _hsd.squaredNorm();
+          number_t hsdSqrNorm = _hsd.squaredNorm();
           beta = (_delta*_delta - hsdSqrNorm) / (c + sqrt(c*c + bmaSquaredNorm * (_delta*_delta - hsdSqrNorm)));
         }
         assert(beta > 0. && beta < 1 && "Error while computing beta");
@@ -176,17 +177,17 @@ namespace g2o {
       // compute the linear gain
       _auxVector.setZero();
       blockSolver->multiplyHessian(_auxVector.data(), _hdl.data());
-      double linearGain = -1 * (_auxVector.dot(_hdl)) + 2 * (b.dot(_hdl));
+      number_t linearGain = -1 * (_auxVector.dot(_hdl)) + 2 * (b.dot(_hdl));
 
       // apply the update and see what happens
       _optimizer->push();
       _optimizer->update(_hdl.data());
       _optimizer->computeActiveErrors();
-      double newChi = _optimizer-> activeRobustChi2();
-      double nonLinearGain = currentChi - newChi;
+      number_t newChi = _optimizer-> activeRobustChi2();
+      number_t nonLinearGain = currentChi - newChi;
       if (fabs(linearGain) < 1e-12)
         linearGain = 1e-12;
-      double rho = nonLinearGain / linearGain;
+      number_t rho = nonLinearGain / linearGain;
       //cerr << PVAR(nonLinearGain) << " " << PVAR(linearGain) << " " << PVAR(rho) << endl;
       if (rho > 0) { // step is good and will be accepted
         _optimizer->discardTop();

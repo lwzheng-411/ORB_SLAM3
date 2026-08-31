@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, H. Strasdat, W. Burgard
 // All rights reserved.
@@ -51,13 +52,13 @@ namespace g2o {
 
       static const int Dimension = BaseEdge<D, E>::Dimension;
       typedef typename BaseEdge<D,E>::Measurement Measurement;
-      typedef typename Matrix<double, D, Di>::AlignedMapType JacobianXiOplusType;
-      typedef typename Matrix<double, D, Dj>::AlignedMapType JacobianXjOplusType;
+      typedef typename Matrix<number_t, D, Di>::AlignedMapType JacobianXiOplusType;
+      typedef typename Matrix<number_t, D, Dj>::AlignedMapType JacobianXjOplusType;
       typedef typename BaseEdge<D,E>::ErrorVector ErrorVector;
       typedef typename BaseEdge<D,E>::InformationType InformationType;
 
-      typedef Eigen::Map<Matrix<double, Di, Dj>, Matrix<double, Di, Dj>::Flags & AlignedBit ? Aligned : Unaligned > HessianBlockType;
-      typedef Eigen::Map<Matrix<double, Dj, Di>, Matrix<double, Dj, Di>::Flags & AlignedBit ? Aligned : Unaligned > HessianBlockTransposedType;
+      typedef Eigen::Map<Matrix<number_t, Di, Dj>, Matrix<number_t, Di, Dj>::Flags & AlignedBit ? Aligned : Unaligned > HessianBlockType;
+      typedef Eigen::Map<Matrix<number_t, Dj, Di>, Matrix<number_t, Dj, Di>::Flags & AlignedBit ? Aligned : Unaligned > HessianBlockTransposedType;
 
       BaseBinaryEdge() : BaseEdge<D,E>(),
       _hessianRowMajor(false),
@@ -90,7 +91,7 @@ namespace g2o {
 
       virtual void constructQuadraticForm() ;
 
-      virtual void mapHessianMemory(double* d, int i, int j, bool rowMajor);
+      virtual void mapHessianMemory(number_t* d, int i, int j, bool rowMajor);
 
       using BaseEdge<D,E>::resize;
       using BaseEdge<D,E>::computeError;

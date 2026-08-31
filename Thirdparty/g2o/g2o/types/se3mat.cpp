@@ -1,34 +1,35 @@
+#include "../core/scalar.h"
 #include "se3mat.h"
 
 namespace g2o {
 
 
-void SE3mat::Retract(const Eigen::Vector3d dr, const Eigen::Vector3d &dt)
+void SE3mat::Retract(const Vector3 dr, const Vector3 &dt)
 {
     t += R*dt;
     R = R*ExpSO3(dr);
 }
 
-Eigen::Matrix3d SE3mat::ExpSO3(const Eigen::Vector3d r)
+Matrix3 SE3mat::ExpSO3(const Vector3 r)
 {
-    Eigen::Matrix3d W;
+    Matrix3 W;
     W << 0, -r[2], r[1],
          r[2], 0, -r[0],
          -r[1], r[0], 0;
 
-    const double theta = r.norm();
+    const number_t theta = r.norm();
 
     if(theta<1e-6)
-        return Eigen::Matrix3d::Identity() + W + 0.5l*W*W;
+        return Matrix3::Identity() + W + 0.5l*W*W;
     else
-        return Eigen::Matrix3d::Identity() + W*sin(theta)/theta + W*W*(1-cos(theta))/(theta*theta);
+        return Matrix3::Identity() + W*sin(theta)/theta + W*W*(1-cos(theta))/(theta*theta);
 }
 
-Eigen::Vector3d SE3mat::LogSO3(const Eigen::Matrix3d R)
+Vector3 SE3mat::LogSO3(const Matrix3 R)
 {
-    const double tr = R(0,0)+R(1,1)+R(2,2);
-    const double theta = acos((tr-1.0l)*0.5l);
-    Eigen::Vector3d w;
+    const number_t tr = R(0,0)+R(1,1)+R(2,2);
+    const number_t theta = acos((tr-1.0l)*0.5l);
+    Vector3 w;
     w << R(2,1), R(0,2), R(1,0);
     if(theta<1e-6)
         return w;

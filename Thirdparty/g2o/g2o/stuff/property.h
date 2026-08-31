@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -151,7 +152,7 @@ namespace g2o {
   typedef Property<int> IntProperty;
   typedef Property<bool> BoolProperty;
   typedef Property<float> FloatProperty;
-  typedef Property<double> DoubleProperty;
+  typedef Property<number_t> DoubleProperty;
   typedef Property<std::string> StringProperty;
 
 } // end namespace

@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 H. Strasdat
 // All rights reserved.
@@ -34,8 +35,8 @@ namespace g2o
 {
   using namespace Eigen;
 
-  typedef  Matrix <double, 7, 1> Vector7d;
-  typedef  Matrix <double, 7, 7> Matrix7d;
+  typedef  Matrix <number_t, 7, 1> Vector7d;
+  typedef  Matrix <number_t, 7, 7> Matrix7d;
   
 
   struct Sim3
@@ -43,9 +44,9 @@ namespace g2o
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   protected:
-    Quaterniond r;
-    Vector3d t;
-    double s;
+    Eigen::Quaternion<number_t> r;
+    Vector3 t;
+    number_t s;
 
 
 public:
@@ -56,13 +57,13 @@ public:
       s=1.;
     }
 
-    Sim3(const Quaterniond & r, const Vector3d & t, double s)
+    Sim3(const Eigen::Quaternion<number_t> & r, const Vector3 & t, number_t s)
       : r(r),t(t),s(s)
     {
     }
 
-    Sim3(const Matrix3d & R, const Vector3d & t, double s)
-      : r(Quaterniond(R)),t(t),s(s)
+    Sim3(const Matrix3 & R, const Vector3 & t, number_t s)
+      : r(Eigen::Quaternion<number_t>(R)),t(t),s(s)
     {
     }
 
@@ -70,25 +71,25 @@ public:
     Sim3(const Vector7d & update)
     {
 
-      Vector3d omega;
+      Vector3 omega;
       for (int i=0; i<3; i++)
         omega[i]=update[i];
 
-      Vector3d upsilon;
+      Vector3 upsilon;
       for (int i=0; i<3; i++)
         upsilon[i]=update[i+3];
 
-      double sigma = update[6];
-      double theta = omega.norm();
-      Matrix3d Omega = skew(omega);
+      number_t sigma = update[6];
+      number_t theta = omega.norm();
+      Matrix3 Omega = skew(omega);
       s = std::exp(sigma);
-      Matrix3d Omega2 = Omega*Omega;
-      Matrix3d I;
+      Matrix3 Omega2 = Omega*Omega;
+      Matrix3 I;
       I.setIdentity();
-      Matrix3d R;
+      Matrix3 R;
 
-      double eps = 0.00001;
-      double A,B,C;
+      number_t eps = 0.00001;
+      number_t A,B,C;
       if (fabs(sigma)<eps)
       {
         C = 1;
@@ -100,7 +101,7 @@ public:
         }
         else
         {
-          double theta2= theta*theta;
+          number_t theta2= theta*theta;
           A = (1-cos(theta))/(theta2);
           B = (theta-sin(theta))/(theta2*theta);
           R = I + sin(theta)/theta *Omega + (1-cos(theta))/(theta*theta)*Omega2;
@@ -111,7 +112,7 @@ public:
         C=(s-1)/sigma;
         if (theta<eps)
         {
-          double sigma2= sigma*sigma;
+          number_t sigma2= sigma*sigma;
           A = ((sigma-1)*s+1)/sigma2;
           B= ((0.5*sigma2-sigma+1)*s)/(sigma2*sigma);
           R = (I + Omega + Omega2);
@@ -122,50 +123,50 @@ public:
 
 
 
-          double a=s*sin(theta);
-          double b=s*cos(theta);
-          double theta2= theta*theta;
-          double sigma2= sigma*sigma;
+          number_t a=s*sin(theta);
+          number_t b=s*cos(theta);
+          number_t theta2= theta*theta;
+          number_t sigma2= sigma*sigma;
 
-          double c=theta2+sigma2;
+          number_t c=theta2+sigma2;
           A = (a*sigma+ (1-b)*theta)/(theta*c);
           B = (C-((b-1)*sigma+a*theta)/(c))*1./(theta2);
 
         }
       }
-      r = Quaterniond(R);
+      r = Eigen::Quaternion<number_t>(R);
 
 
 
-      Matrix3d W = A*Omega + B*Omega2 + C*I;
+      Matrix3 W = A*Omega + B*Omega2 + C*I;
       t = W*upsilon;
     }
 
-     Vector3d map (const Vector3d& xyz) const {
+     Vector3 map (const Vector3& xyz) const {
       return s*(r*xyz) + t;
     }
 
     Vector7d log() const
     {
       Vector7d res;
-      double sigma = std::log(s);
+      number_t sigma = std::log(s);
 
       
 
    
-      Vector3d omega;
-      Vector3d upsilon;
+      Vector3 omega;
+      Vector3 upsilon;
 
 
-      Matrix3d R = r.toRotationMatrix();
-      double d =  0.5*(R(0,0)+R(1,1)+R(2,2)-1);
+      Matrix3 R = r.toRotationMatrix();
+      number_t d =  0.5*(R(0,0)+R(1,1)+R(2,2)-1);
 
-      Matrix3d Omega;
+      Matrix3 Omega;
 
-      double eps = 0.00001;
-      Matrix3d I = Matrix3d::Identity();
+      number_t eps = 0.00001;
+      Matrix3 I = Matrix3::Identity();
 
-      double A,B,C;
+      number_t A,B,C;
       if (fabs(sigma)<eps)
       {
         C = 1;
@@ -178,8 +179,8 @@ public:
         }
         else
         {
-          double theta = acos(d);
-          double theta2 = theta*theta;
+          number_t theta = acos(d);
+          number_t theta2 = theta*theta;
           omega = theta/(2*sqrt(1-d*d))*deltaR(R);
           Omega = skew(omega);
           A = (1-cos(theta))/(theta2);
@@ -192,7 +193,7 @@ public:
         if (d>1-eps)
         {
 
-          double sigma2 = sigma*sigma;
+          number_t sigma2 = sigma*sigma;
           omega=0.5*deltaR(R);
           Omega = skew(omega);
           A = ((sigma-1)*s+1)/(sigma2);
@@ -200,19 +201,19 @@ public:
         }
         else
         {
-          double theta = acos(d);
+          number_t theta = acos(d);
           omega = theta/(2*sqrt(1-d*d))*deltaR(R);
           Omega = skew(omega);
-          double theta2 = theta*theta;
-          double a=s*sin(theta);
-          double b=s*cos(theta);
-          double c=theta2 + sigma*sigma;
+          number_t theta2 = theta*theta;
+          number_t a=s*sin(theta);
+          number_t b=s*cos(theta);
+          number_t c=theta2 + sigma*sigma;
           A = (a*sigma+ (1-b)*theta)/(theta*c);
           B = (C-((b-1)*sigma+a*theta)/(c))*1./(theta2);
         }
       }
 
-      Matrix3d W = A*Omega + B*Omega*Omega + C*I;
+      Matrix3 W = A*Omega + B*Omega*Omega + C*I;
 
       upsilon = W.lu().solve(t);
 
@@ -236,7 +237,7 @@ public:
     }
     
 
-    double operator[](int i) const
+    number_t operator[](int i) const
     {
       assert(i<8);
       if (i<4){
@@ -249,7 +250,7 @@ public:
       return s;
     }
 
-    double& operator[](int i)
+    number_t& operator[](int i)
     {
       assert(i<8);
       if (i<4){
@@ -277,17 +278,17 @@ public:
       return *this;
     }
 
-    inline const Vector3d& translation() const {return t;}
+    inline const Vector3& translation() const {return t;}
 
-    inline Vector3d& translation() {return t;}
+    inline Vector3& translation() {return t;}
 
-    inline const Quaterniond& rotation() const {return r;}
+    inline const Eigen::Quaternion<number_t>& rotation() const {return r;}
 
-    inline Quaterniond& rotation() {return r;}
+    inline Eigen::Quaternion<number_t>& rotation() {return r;}
 
-    inline const double& scale() const {return s;}
+    inline const number_t& scale() const {return s;}
 
-    inline double& scale() {return s;}
+    inline number_t& scale() {return s;}
 
   };
 

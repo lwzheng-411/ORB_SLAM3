@@ -83,8 +83,8 @@ public:
     void SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::vector<Eigen::Vector3d> &_tcw, const std::vector<Eigen::Matrix3d> &_Rbc,
                   const std::vector<Eigen::Vector3d> &_tbc, const double &_bf);
 
-    void Update(const double *pu); // update in the imu reference
-    void UpdateW(const double *pu); // update in the world reference
+    void Update(const g2o::number_t *pu); // update in the imu reference
+    void UpdateW(const g2o::number_t *pu); // update in the world reference
     Eigen::Vector2d Project(const Eigen::Vector3d &Xw, int cam_idx=0) const; // Mono
     Eigen::Vector3d ProjectStereo(const Eigen::Vector3d &Xw, int cam_idx=0) const; // Stereo
     bool isDepthPositive(const Eigen::Vector3d &Xw, int cam_idx=0) const;
@@ -116,7 +116,7 @@ public:
     InvDepthPoint(){}
     InvDepthPoint(double _rho, double _u, double _v, KeyFrame* pHostKF);
 
-    void Update(const double *pu);
+    void Update(const g2o::number_t *pu);
 
     double rho;
     double u, v; // they are not variables, observation in the host frame
@@ -146,7 +146,7 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
+    virtual void oplusImpl(const g2o::number_t * update_){
         _estimate.Update(update_);
         updateCache();
     }
@@ -175,8 +175,8 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
-        double update6DoF[6];
+    virtual void oplusImpl(const g2o::number_t * update_){
+        g2o::number_t update6DoF[6];
         update6DoF[0] = 0;
         update6DoF[1] = 0;
         update6DoF[2] = update_[0];
@@ -202,7 +202,7 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
+    virtual void oplusImpl(const g2o::number_t * update_){
         Eigen::Vector3d uv;
         uv << update_[0], update_[1], update_[2];
         setEstimate(estimate()+uv);
@@ -223,7 +223,7 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
+    virtual void oplusImpl(const g2o::number_t * update_){
         Eigen::Vector3d ubg;
         ubg << update_[0], update_[1], update_[2];
         setEstimate(estimate()+ubg);
@@ -245,7 +245,7 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
+    virtual void oplusImpl(const g2o::number_t * update_){
         Eigen::Vector3d uba;
         uba << update_[0], update_[1], update_[2];
         setEstimate(estimate()+uba);
@@ -261,7 +261,7 @@ public:
     GDirection(){}
     GDirection(Eigen::Matrix3d pRwg): Rwg(pRwg){}
 
-    void Update(const double *pu)
+    void Update(const g2o::number_t *pu)
     {
         Rwg=Rwg*ExpSO3(pu[0],pu[1],0.0);
     }
@@ -286,7 +286,7 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
+    virtual void oplusImpl(const g2o::number_t * update_){
         _estimate.Update(update_);
         updateCache();
     }
@@ -311,7 +311,7 @@ public:
         setEstimate(1.0);
     }
 
-    virtual void oplusImpl(const double *update_){
+    virtual void oplusImpl(const g2o::number_t *update_){
         setEstimate(estimate()*exp(*update_));
     }
 };
@@ -333,7 +333,7 @@ public:
     virtual void setToOriginImpl() {
         }
 
-    virtual void oplusImpl(const double* update_){
+    virtual void oplusImpl(const g2o::number_t * update_){
         _estimate.Update(update_);
         updateCache();
     }
@@ -354,7 +354,7 @@ public:
         const g2o::VertexSBAPointXYZ* VPoint = static_cast<const g2o::VertexSBAPointXYZ*>(_vertices[0]);
         const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[1]);
         const Eigen::Vector2d obs(_measurement);
-        _error = obs - VPose->estimate().Project(VPoint->estimate(),cam_idx);
+        _error = (obs - VPose->estimate().Project(VPoint->estimate().cast<double>(),cam_idx)).cast<g2o::number_t>();
     }
 
 
@@ -364,23 +364,23 @@ public:
     {
         const g2o::VertexSBAPointXYZ* VPoint = static_cast<const g2o::VertexSBAPointXYZ*>(_vertices[0]);
         const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[1]);
-        return VPose->estimate().isDepthPositive(VPoint->estimate(),cam_idx);
+        return VPose->estimate().isDepthPositive(VPoint->estimate().cast<double>(),cam_idx);
     }
 
     Eigen::Matrix<double,2,9> GetJacobian(){
         linearizeOplus();
         Eigen::Matrix<double,2,9> J;
-        J.block<2,3>(0,0) = _jacobianOplusXi;
-        J.block<2,6>(0,3) = _jacobianOplusXj;
+        J.block<2,3>(0,0) = _jacobianOplusXi.cast<double>();
+        J.block<2,6>(0,3) = _jacobianOplusXj.cast<double>();
         return J;
     }
 
     Eigen::Matrix<double,9,9> GetHessian(){
         linearizeOplus();
         Eigen::Matrix<double,2,9> J;
-        J.block<2,3>(0,0) = _jacobianOplusXi;
-        J.block<2,6>(0,3) = _jacobianOplusXj;
-        return J.transpose()*information()*J;
+        J.block<2,3>(0,0) = _jacobianOplusXi.cast<double>();
+        J.block<2,6>(0,3) = _jacobianOplusXj.cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
 public:
@@ -401,7 +401,7 @@ public:
     void computeError(){
         const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[0]);
         const Eigen::Vector2d obs(_measurement);
-        _error = obs - VPose->estimate().Project(Xw,cam_idx);
+        _error = (obs - VPose->estimate().Project(Xw,cam_idx)).cast<g2o::number_t>();
     }
 
     virtual void linearizeOplus();
@@ -414,7 +414,7 @@ public:
 
     Eigen::Matrix<double,6,6> GetHessian(){
         linearizeOplus();
-        return _jacobianOplusXi.transpose()*information()*_jacobianOplusXi;
+        return _jacobianOplusXi.cast<double>().transpose()*information().cast<double>()*_jacobianOplusXi.cast<double>();
     }
 
 public:
@@ -436,7 +436,7 @@ public:
         const g2o::VertexSBAPointXYZ* VPoint = static_cast<const g2o::VertexSBAPointXYZ*>(_vertices[0]);
         const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[1]);
         const Eigen::Vector3d obs(_measurement);
-        _error = obs - VPose->estimate().ProjectStereo(VPoint->estimate(),cam_idx);
+        _error = (obs - VPose->estimate().ProjectStereo(VPoint->estimate().cast<double>(),cam_idx)).cast<g2o::number_t>();
     }
 
 
@@ -445,17 +445,17 @@ public:
     Eigen::Matrix<double,3,9> GetJacobian(){
         linearizeOplus();
         Eigen::Matrix<double,3,9> J;
-        J.block<3,3>(0,0) = _jacobianOplusXi;
-        J.block<3,6>(0,3) = _jacobianOplusXj;
+        J.block<3,3>(0,0) = _jacobianOplusXi.cast<double>();
+        J.block<3,6>(0,3) = _jacobianOplusXj.cast<double>();
         return J;
     }
 
     Eigen::Matrix<double,9,9> GetHessian(){
         linearizeOplus();
         Eigen::Matrix<double,3,9> J;
-        J.block<3,3>(0,0) = _jacobianOplusXi;
-        J.block<3,6>(0,3) = _jacobianOplusXj;
-        return J.transpose()*information()*J;
+        J.block<3,3>(0,0) = _jacobianOplusXi.cast<double>();
+        J.block<3,6>(0,3) = _jacobianOplusXj.cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
 public:
@@ -477,14 +477,14 @@ public:
     void computeError(){
         const VertexPose* VPose = static_cast<const VertexPose*>(_vertices[0]);
         const Eigen::Vector3d obs(_measurement);
-        _error = obs - VPose->estimate().ProjectStereo(Xw, cam_idx);
+        _error = (obs - VPose->estimate().ProjectStereo(Xw, cam_idx)).cast<g2o::number_t>();
     }
 
     virtual void linearizeOplus();
 
     Eigen::Matrix<double,6,6> GetHessian(){
         linearizeOplus();
-        return _jacobianOplusXi.transpose()*information()*_jacobianOplusXi;
+        return _jacobianOplusXi.cast<double>().transpose()*information().cast<double>()*_jacobianOplusXi.cast<double>();
     }
 
 public:
@@ -508,32 +508,32 @@ public:
     Eigen::Matrix<double,24,24> GetHessian(){
         linearizeOplus();
         Eigen::Matrix<double,9,24> J;
-        J.block<9,6>(0,0) = _jacobianOplus[0];
-        J.block<9,3>(0,6) = _jacobianOplus[1];
-        J.block<9,3>(0,9) = _jacobianOplus[2];
-        J.block<9,3>(0,12) = _jacobianOplus[3];
-        J.block<9,6>(0,15) = _jacobianOplus[4];
-        J.block<9,3>(0,21) = _jacobianOplus[5];
-        return J.transpose()*information()*J;
+        J.block<9,6>(0,0) = _jacobianOplus[0].cast<double>();
+        J.block<9,3>(0,6) = _jacobianOplus[1].cast<double>();
+        J.block<9,3>(0,9) = _jacobianOplus[2].cast<double>();
+        J.block<9,3>(0,12) = _jacobianOplus[3].cast<double>();
+        J.block<9,6>(0,15) = _jacobianOplus[4].cast<double>();
+        J.block<9,3>(0,21) = _jacobianOplus[5].cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,18,18> GetHessianNoPose1(){
         linearizeOplus();
         Eigen::Matrix<double,9,18> J;
-        J.block<9,3>(0,0) = _jacobianOplus[1];
-        J.block<9,3>(0,3) = _jacobianOplus[2];
-        J.block<9,3>(0,6) = _jacobianOplus[3];
-        J.block<9,6>(0,9) = _jacobianOplus[4];
-        J.block<9,3>(0,15) = _jacobianOplus[5];
-        return J.transpose()*information()*J;
+        J.block<9,3>(0,0) = _jacobianOplus[1].cast<double>();
+        J.block<9,3>(0,3) = _jacobianOplus[2].cast<double>();
+        J.block<9,3>(0,6) = _jacobianOplus[3].cast<double>();
+        J.block<9,6>(0,9) = _jacobianOplus[4].cast<double>();
+        J.block<9,3>(0,15) = _jacobianOplus[5].cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,9,9> GetHessian2(){
         linearizeOplus();
         Eigen::Matrix<double,9,9> J;
-        J.block<9,6>(0,0) = _jacobianOplus[4];
-        J.block<9,3>(0,6) = _jacobianOplus[5];
-        return J.transpose()*information()*J;
+        J.block<9,6>(0,0) = _jacobianOplus[4].cast<double>();
+        J.block<9,3>(0,6) = _jacobianOplus[5].cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     const Eigen::Matrix3d JRg, JVg, JPg;
@@ -568,65 +568,65 @@ public:
     Eigen::Matrix<double,27,27> GetHessian(){
         linearizeOplus();
         Eigen::Matrix<double,9,27> J;
-        J.block<9,6>(0,0) = _jacobianOplus[0];
-        J.block<9,3>(0,6) = _jacobianOplus[1];
-        J.block<9,3>(0,9) = _jacobianOplus[2];
-        J.block<9,3>(0,12) = _jacobianOplus[3];
-        J.block<9,6>(0,15) = _jacobianOplus[4];
-        J.block<9,3>(0,21) = _jacobianOplus[5];
-        J.block<9,2>(0,24) = _jacobianOplus[6];
-        J.block<9,1>(0,26) = _jacobianOplus[7];
-        return J.transpose()*information()*J;
+        J.block<9,6>(0,0) = _jacobianOplus[0].cast<double>();
+        J.block<9,3>(0,6) = _jacobianOplus[1].cast<double>();
+        J.block<9,3>(0,9) = _jacobianOplus[2].cast<double>();
+        J.block<9,3>(0,12) = _jacobianOplus[3].cast<double>();
+        J.block<9,6>(0,15) = _jacobianOplus[4].cast<double>();
+        J.block<9,3>(0,21) = _jacobianOplus[5].cast<double>();
+        J.block<9,2>(0,24) = _jacobianOplus[6].cast<double>();
+        J.block<9,1>(0,26) = _jacobianOplus[7].cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,27,27> GetHessian2(){
         linearizeOplus();
         Eigen::Matrix<double,9,27> J;
-        J.block<9,3>(0,0) = _jacobianOplus[2];
-        J.block<9,3>(0,3) = _jacobianOplus[3];
-        J.block<9,2>(0,6) = _jacobianOplus[6];
-        J.block<9,1>(0,8) = _jacobianOplus[7];
-        J.block<9,3>(0,9) = _jacobianOplus[1];
-        J.block<9,3>(0,12) = _jacobianOplus[5];
-        J.block<9,6>(0,15) = _jacobianOplus[0];
-        J.block<9,6>(0,21) = _jacobianOplus[4];
-        return J.transpose()*information()*J;
+        J.block<9,3>(0,0) = _jacobianOplus[2].cast<double>();
+        J.block<9,3>(0,3) = _jacobianOplus[3].cast<double>();
+        J.block<9,2>(0,6) = _jacobianOplus[6].cast<double>();
+        J.block<9,1>(0,8) = _jacobianOplus[7].cast<double>();
+        J.block<9,3>(0,9) = _jacobianOplus[1].cast<double>();
+        J.block<9,3>(0,12) = _jacobianOplus[5].cast<double>();
+        J.block<9,6>(0,15) = _jacobianOplus[0].cast<double>();
+        J.block<9,6>(0,21) = _jacobianOplus[4].cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,9,9> GetHessian3(){
         linearizeOplus();
         Eigen::Matrix<double,9,9> J;
-        J.block<9,3>(0,0) = _jacobianOplus[2];
-        J.block<9,3>(0,3) = _jacobianOplus[3];
-        J.block<9,2>(0,6) = _jacobianOplus[6];
-        J.block<9,1>(0,8) = _jacobianOplus[7];
-        return J.transpose()*information()*J;
+        J.block<9,3>(0,0) = _jacobianOplus[2].cast<double>();
+        J.block<9,3>(0,3) = _jacobianOplus[3].cast<double>();
+        J.block<9,2>(0,6) = _jacobianOplus[6].cast<double>();
+        J.block<9,1>(0,8) = _jacobianOplus[7].cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
 
 
     Eigen::Matrix<double,1,1> GetHessianScale(){
         linearizeOplus();
-        Eigen::Matrix<double,9,1> J = _jacobianOplus[7];
-        return J.transpose()*information()*J;
+        Eigen::Matrix<double,9,1> J = _jacobianOplus[7].cast<double>().cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,3,3> GetHessianBiasGyro(){
         linearizeOplus();
-        Eigen::Matrix<double,9,3> J = _jacobianOplus[2];
-        return J.transpose()*information()*J;
+        Eigen::Matrix<double,9,3> J = _jacobianOplus[2].cast<double>().cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,3,3> GetHessianBiasAcc(){
         linearizeOplus();
-        Eigen::Matrix<double,9,3> J = _jacobianOplus[3];
-        return J.transpose()*information()*J;
+        Eigen::Matrix<double,9,3> J = _jacobianOplus[3].cast<double>().cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix<double,2,2> GetHessianGDir(){
         linearizeOplus();
-        Eigen::Matrix<double,9,2> J = _jacobianOplus[6];
-        return J.transpose()*information()*J;
+        Eigen::Matrix<double,9,2> J = _jacobianOplus[6].cast<double>().cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 };
 
@@ -645,25 +645,25 @@ public:
     void computeError(){
         const VertexGyroBias* VG1= static_cast<const VertexGyroBias*>(_vertices[0]);
         const VertexGyroBias* VG2= static_cast<const VertexGyroBias*>(_vertices[1]);
-        _error = VG2->estimate()-VG1->estimate();
+        _error = (VG2->estimate()-VG1->estimate()).cast<g2o::number_t>();
     }
 
     virtual void linearizeOplus(){
-        _jacobianOplusXi = -Eigen::Matrix3d::Identity();
+        _jacobianOplusXi = -Eigen::Matrix<g2o::number_t,3,3>::Identity();
         _jacobianOplusXj.setIdentity();
     }
 
     Eigen::Matrix<double,6,6> GetHessian(){
         linearizeOplus();
         Eigen::Matrix<double,3,6> J;
-        J.block<3,3>(0,0) = _jacobianOplusXi;
-        J.block<3,3>(0,3) = _jacobianOplusXj;
-        return J.transpose()*information()*J;
+        J.block<3,3>(0,0) = _jacobianOplusXi.cast<double>();
+        J.block<3,3>(0,3) = _jacobianOplusXj.cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix3d GetHessian2(){
         linearizeOplus();
-        return _jacobianOplusXj.transpose()*information()*_jacobianOplusXj;
+        return _jacobianOplusXj.cast<double>().transpose()*information().cast<double>()*_jacobianOplusXj.cast<double>();
     }
 };
 
@@ -681,25 +681,25 @@ public:
     void computeError(){
         const VertexAccBias* VA1= static_cast<const VertexAccBias*>(_vertices[0]);
         const VertexAccBias* VA2= static_cast<const VertexAccBias*>(_vertices[1]);
-        _error = VA2->estimate()-VA1->estimate();
+        _error = (VA2->estimate()-VA1->estimate()).cast<g2o::number_t>();
     }
 
     virtual void linearizeOplus(){
-        _jacobianOplusXi = -Eigen::Matrix3d::Identity();
+        _jacobianOplusXi = -Eigen::Matrix<g2o::number_t,3,3>::Identity();
         _jacobianOplusXj.setIdentity();
     }
 
     Eigen::Matrix<double,6,6> GetHessian(){
         linearizeOplus();
         Eigen::Matrix<double,3,6> J;
-        J.block<3,3>(0,0) = _jacobianOplusXi;
-        J.block<3,3>(0,3) = _jacobianOplusXj;
-        return J.transpose()*information()*J;
+        J.block<3,3>(0,0) = _jacobianOplusXi.cast<double>();
+        J.block<3,3>(0,3) = _jacobianOplusXj.cast<double>();
+        return J.transpose()*information().cast<double>()*J;
     }
 
     Eigen::Matrix3d GetHessian2(){
         linearizeOplus();
-        return _jacobianOplusXj.transpose()*information()*_jacobianOplusXj;
+        return _jacobianOplusXj.cast<double>().transpose()*information().cast<double>()*_jacobianOplusXj.cast<double>();
     }
 };
 
@@ -744,20 +744,20 @@ public:
         Eigen::Matrix<double,15,15> GetHessian(){
             linearizeOplus();
             Eigen::Matrix<double,15,15> J;
-            J.block<15,6>(0,0) = _jacobianOplus[0];
-            J.block<15,3>(0,6) = _jacobianOplus[1];
-            J.block<15,3>(0,9) = _jacobianOplus[2];
-            J.block<15,3>(0,12) = _jacobianOplus[3];
-            return J.transpose()*information()*J;
+            J.block<15,6>(0,0) = _jacobianOplus[0].cast<double>();
+            J.block<15,3>(0,6) = _jacobianOplus[1].cast<double>();
+            J.block<15,3>(0,9) = _jacobianOplus[2].cast<double>();
+            J.block<15,3>(0,12) = _jacobianOplus[3].cast<double>();
+            return J.transpose()*information().cast<double>()*J;
         }
 
         Eigen::Matrix<double,9,9> GetHessianNoPose(){
             linearizeOplus();
             Eigen::Matrix<double,15,9> J;
-            J.block<15,3>(0,0) = _jacobianOplus[1];
-            J.block<15,3>(0,3) = _jacobianOplus[2];
-            J.block<15,3>(0,6) = _jacobianOplus[3];
-            return J.transpose()*information()*J;
+            J.block<15,3>(0,0) = _jacobianOplus[1].cast<double>();
+            J.block<15,3>(0,3) = _jacobianOplus[2].cast<double>();
+            J.block<15,3>(0,6) = _jacobianOplus[3].cast<double>();
+            return J.transpose()*information().cast<double>()*J;
         }
         Eigen::Matrix3d Rwb;
         Eigen::Vector3d twb, vwb;
@@ -777,13 +777,13 @@ public:
 
     void computeError(){
         const VertexAccBias* VA = static_cast<const VertexAccBias*>(_vertices[0]);
-        _error = bprior - VA->estimate();
+        _error = (bprior - VA->estimate()).cast<g2o::number_t>();
     }
     virtual void linearizeOplus();
 
     Eigen::Matrix<double,3,3> GetHessian(){
         linearizeOplus();
-        return _jacobianOplusXi.transpose()*information()*_jacobianOplusXi;
+        return _jacobianOplusXi.cast<double>().transpose()*information().cast<double>()*_jacobianOplusXi.cast<double>();
     }
 
     const Eigen::Vector3d bprior;
@@ -801,13 +801,13 @@ public:
 
     void computeError(){
         const VertexGyroBias* VG = static_cast<const VertexGyroBias*>(_vertices[0]);
-        _error = bprior - VG->estimate();
+        _error = (bprior - VG->estimate()).cast<g2o::number_t>();
     }
     virtual void linearizeOplus();
 
     Eigen::Matrix<double,3,3> GetHessian(){
         linearizeOplus();
-        return _jacobianOplusXi.transpose()*information()*_jacobianOplusXi;
+        return _jacobianOplusXi.cast<double>().transpose()*information().cast<double>()*_jacobianOplusXi.cast<double>();
     }
 
     const Eigen::Vector3d bprior;
@@ -831,8 +831,10 @@ public:
     void computeError(){
         const VertexPose4DoF* VPi = static_cast<const VertexPose4DoF*>(_vertices[0]);
         const VertexPose4DoF* VPj = static_cast<const VertexPose4DoF*>(_vertices[1]);
-        _error << LogSO3(VPi->estimate().Rcw[0]*VPj->estimate().Rcw[0].transpose()*dRij.transpose()),
-                 VPi->estimate().Rcw[0]*(-VPj->estimate().Rcw[0].transpose()*VPj->estimate().tcw[0])+VPi->estimate().tcw[0] - dtij;
+        Eigen::Matrix<double,6,1> err;
+        err << LogSO3(VPi->estimate().Rcw[0]*VPj->estimate().Rcw[0].transpose()*dRij.transpose()),
+               VPi->estimate().Rcw[0]*(-VPj->estimate().Rcw[0].transpose()*VPj->estimate().tcw[0])+VPi->estimate().tcw[0] - dtij;
+        _error = err.cast<g2o::number_t>();
     }
 
     // virtual void linearizeOplus(); // numerical implementation

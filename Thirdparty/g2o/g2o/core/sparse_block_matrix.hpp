@@ -31,8 +31,8 @@ namespace g2o {
     struct TripletEntry
     {
       int r, c;
-      double x;
-      TripletEntry(int r_, int c_, double x_) : r(r_), c(c_), x(x_) {}
+      number_t x;
+      TripletEntry(int r_, int c_, number_t x_) : r(r_), c(c_), x(x_) {}
     };
     struct TripletColSort
     {
@@ -232,15 +232,15 @@ namespace g2o {
   }
 
   template <class MatrixType>
-  void SparseBlockMatrix<MatrixType>::multiply(double*& dest, const double* src) const {
+  void SparseBlockMatrix<MatrixType>::multiply(number_t*& dest, const number_t* src) const {
     if (! dest){
-      dest=new double [_rowBlockIndices[_rowBlockIndices.size()-1] ];
-      memset(dest,0, _rowBlockIndices[_rowBlockIndices.size()-1]*sizeof(double));
+      dest=new number_t [_rowBlockIndices[_rowBlockIndices.size()-1] ];
+      memset(dest,0, _rowBlockIndices[_rowBlockIndices.size()-1]*sizeof(number_t));
     }
 
     // map the memory by Eigen
-    Eigen::Map<VectorXd> destVec(dest, rows());
-    const Eigen::Map<const VectorXd> srcVec(src, cols());
+    Eigen::Map<VectorX> destVec(dest, rows());
+    const Eigen::Map<const VectorX> srcVec(src, cols());
 
     for (size_t i=0; i<_blockCols.size(); ++i){
       int srcOffset = i ? _colBlockIndices[i-1] : 0;
@@ -255,16 +255,16 @@ namespace g2o {
   }
 
   template <class MatrixType>
-  void SparseBlockMatrix<MatrixType>::multiplySymmetricUpperTriangle(double*& dest, const double* src) const
+  void SparseBlockMatrix<MatrixType>::multiplySymmetricUpperTriangle(number_t*& dest, const number_t* src) const
   {
     if (! dest){
-      dest=new double [_rowBlockIndices[_rowBlockIndices.size()-1] ];
-      memset(dest,0, _rowBlockIndices[_rowBlockIndices.size()-1]*sizeof(double));
+      dest=new number_t [_rowBlockIndices[_rowBlockIndices.size()-1] ];
+      memset(dest,0, _rowBlockIndices[_rowBlockIndices.size()-1]*sizeof(number_t));
     }
 
     // map the memory by Eigen
-    Eigen::Map<VectorXd> destVec(dest, rows());
-    const Eigen::Map<const VectorXd> srcVec(src, cols());
+    Eigen::Map<VectorX> destVec(dest, rows());
+    const Eigen::Map<const VectorX> srcVec(src, cols());
 
     for (size_t i=0; i<_blockCols.size(); ++i){
       int srcOffset = colBaseOfBlock(i);
@@ -282,17 +282,17 @@ namespace g2o {
   }
 
   template <class MatrixType>
-  void SparseBlockMatrix<MatrixType>::rightMultiply(double*& dest, const double* src) const {
+  void SparseBlockMatrix<MatrixType>::rightMultiply(number_t*& dest, const number_t* src) const {
     int destSize=cols();
 
     if (! dest){
-      dest=new double [ destSize ];
-      memset(dest,0, destSize*sizeof(double));
+      dest=new number_t [ destSize ];
+      memset(dest,0, destSize*sizeof(number_t));
     }
 
     // map the memory by Eigen
-    Eigen::Map<VectorXd> destVec(dest, destSize);
-    Eigen::Map<const VectorXd> srcVec(src, rows());
+    Eigen::Map<VectorX> destVec(dest, destSize);
+    Eigen::Map<const VectorX> srcVec(src, rows());
 
 #   ifdef G2O_OPENMP
 #   pragma omp parallel for default (shared) schedule(dynamic, 10)
@@ -312,7 +312,7 @@ namespace g2o {
   }
 
   template <class MatrixType>
-  void SparseBlockMatrix<MatrixType>::scale(double a_) {
+  void SparseBlockMatrix<MatrixType>::scale(number_t a_) {
     for (size_t i=0; i<_blockCols.size(); ++i){
       for (typename SparseBlockMatrix<MatrixType>::IntBlockMap::const_iterator it=_blockCols[i].begin(); it!=_blockCols[i].end(); ++it){
         typename SparseBlockMatrix<MatrixType>::SparseMatrixBlock* a=it->second;
@@ -462,10 +462,10 @@ namespace g2o {
   }
 
   template <class MatrixType>
-  int SparseBlockMatrix<MatrixType>::fillCCS(double* Cx, bool upperTriangle) const
+  int SparseBlockMatrix<MatrixType>::fillCCS(number_t* Cx, bool upperTriangle) const
   {
     assert(Cx && "Target destination is NULL");
-    double* CxStart = Cx;
+    number_t* CxStart = Cx;
     for (size_t i=0; i<_blockCols.size(); ++i){
       int cstart=i ? _colBlockIndices[i-1] : 0;
       int csize=colsOfBlock(i);
@@ -477,7 +477,7 @@ namespace g2o {
           int elemsToCopy = b->rows();
           if (upperTriangle && rstart == cstart)
             elemsToCopy = c + 1;
-          memcpy(Cx, b->data() + c*b->rows(), elemsToCopy * sizeof(double));
+          memcpy(Cx, b->data() + c*b->rows(), elemsToCopy * sizeof(number_t));
           Cx += elemsToCopy;
 
         }
@@ -487,7 +487,7 @@ namespace g2o {
   }
 
   template <class MatrixType>
-  int SparseBlockMatrix<MatrixType>::fillCCS(int* Cp, int* Ci, double* Cx, bool upperTriangle) const
+  int SparseBlockMatrix<MatrixType>::fillCCS(int* Cp, int* Ci, number_t* Cx, bool upperTriangle) const
   {
     assert(Cp && Ci && Cx && "Target destination is NULL");
     int nz=0;

@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -55,20 +56,20 @@ class LinearSolver
      * If the matrix changes call init() before.
      * solve system Ax = b, x and b have to allocated beforehand!!
      */
-    virtual bool solve(const SparseBlockMatrix<MatrixType>& A, double* x, double* b) = 0;
+    virtual bool solve(const SparseBlockMatrix<MatrixType>& A, number_t* x, number_t* b) = 0;
 
     /**
      * Inverts the diagonal blocks of A
      * @returns false if not defined.
      */
-    virtual bool solveBlocks(double**&blocks, const SparseBlockMatrix<MatrixType>& A) { (void)blocks; (void) A; return false; }
+    virtual bool solveBlocks(number_t**&blocks, const SparseBlockMatrix<MatrixType>& A) { (void)blocks; (void) A; return false; }
 
 
     /**
      * Inverts the a block pattern of A in spinv
      * @returns false if not defined.
      */
-    virtual bool solvePattern(SparseBlockMatrix<MatrixXd>& spinv, const std::vector<std::pair<int, int> >& blockIndices, const SparseBlockMatrix<MatrixType>& A){
+    virtual bool solvePattern(SparseBlockMatrix<MatrixX>& spinv, const std::vector<std::pair<int, int> >& blockIndices, const SparseBlockMatrix<MatrixType>& A){
       (void) spinv;
       (void) blockIndices;
       (void) A;

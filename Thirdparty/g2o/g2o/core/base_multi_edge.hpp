@@ -36,10 +36,10 @@ template <int D, typename E>
 void BaseMultiEdge<D, E>::constructQuadraticForm()
 {
   if (this->robustKernel()) {
-    double error = this->chi2();
-    Eigen::Vector3d rho;
+    number_t error = this->chi2();
+    Vector3 rho;
     this->robustKernel()->robustify(error, rho);
-    Matrix<double, D, 1> omega_r = - _information * _error;
+    Matrix<number_t, D, 1> omega_r = - _information * _error;
     omega_r *= rho[1];
     computeQuadraticForm(this->robustInformation(rho), omega_r);
   } else {
@@ -69,8 +69,8 @@ void BaseMultiEdge<D, E>::linearizeOplus()
   }
 #endif
 
-  const double delta = 1e-9;
-  const double scalar = 1.0 / (2*delta);
+  const number_t delta = 1e-9;
+  const number_t scalar = 1.0 / (2*delta);
   ErrorVector errorBak;
   ErrorVector errorBeforeNumeric = _error;
 
@@ -84,9 +84,9 @@ void BaseMultiEdge<D, E>::linearizeOplus()
     const int vi_dim = vi->dimension();
     assert(vi_dim >= 0);
 #ifdef _MSC_VER
-    double* add_vi = new double[vi_dim];
+    number_t* add_vi = new number_t[vi_dim];
 #else
-    double add_vi[vi_dim];
+    number_t add_vi[vi_dim];
 #endif
     std::fill(add_vi, add_vi + vi_dim, 0.0);
     assert(_dimension >= 0);
@@ -126,7 +126,7 @@ void BaseMultiEdge<D, E>::linearizeOplus()
 }
 
 template <int D, typename E>
-void BaseMultiEdge<D, E>::mapHessianMemory(double* d, int i, int j, bool rowMajor)
+void BaseMultiEdge<D, E>::mapHessianMemory(number_t* d, int i, int j, bool rowMajor)
 {
   int idx = internal::computeUpperTriangleIndex(i, j);
   assert(idx < (int)_hessian.size());
@@ -175,13 +175,13 @@ void BaseMultiEdge<D, E>::computeQuadraticForm(const InformationType& omega, con
     bool istatus = !(from->fixed());
 
     if (istatus) {
-      const MatrixXd& A = _jacobianOplus[i];
+      const MatrixX& A = _jacobianOplus[i];
 
-      MatrixXd AtO = A.transpose() * omega;
+      MatrixX AtO = A.transpose() * omega;
       int fromDim = from->dimension();
       assert(fromDim >= 0);
-      Eigen::Map<MatrixXd> fromMap(from->hessianData(), fromDim, fromDim);
-      Eigen::Map<VectorXd> fromB(from->bData(), fromDim);
+      Eigen::Map<MatrixX> fromMap(from->hessianData(), fromDim, fromDim);
+      Eigen::Map<VectorX> fromB(from->bData(), fromDim);
 
       // ii block in the hessian
 #ifdef G2O_OPENMP
@@ -198,7 +198,7 @@ void BaseMultiEdge<D, E>::computeQuadraticForm(const InformationType& omega, con
 #endif
         bool jstatus = !(to->fixed());
         if (jstatus) {
-          const MatrixXd& B = _jacobianOplus[j];
+          const MatrixX& B = _jacobianOplus[j];
           int idx = internal::computeUpperTriangleIndex(i, j);
           assert(idx < (int)_hessian.size());
           HessianHelper& hhelper = _hessian[idx];

@@ -40,25 +40,25 @@ g2o::SE3Quat Converter::toSE3Quat(const cv::Mat &cvT)
 
     Eigen::Matrix<double,3,1> t(cvT.at<float>(0,3), cvT.at<float>(1,3), cvT.at<float>(2,3));
 
-    return g2o::SE3Quat(R,t);
+    return g2o::SE3Quat(R.cast<g2o::number_t>(),t.cast<g2o::number_t>());
 }
 
 g2o::SE3Quat Converter::toSE3Quat(const Sophus::SE3f &T)
 {
-    return g2o::SE3Quat(T.unit_quaternion().cast<double>(), T.translation().cast<double>());
+    return g2o::SE3Quat(T.unit_quaternion().cast<g2o::number_t>(), T.translation().cast<g2o::number_t>());
 }
 
 cv::Mat Converter::toCvMat(const g2o::SE3Quat &SE3)
 {
-    Eigen::Matrix<double,4,4> eigMat = SE3.to_homogeneous_matrix();
+    Eigen::Matrix<double,4,4> eigMat = SE3.to_homogeneous_matrix().cast<double>();
     return toCvMat(eigMat);
 }
 
 cv::Mat Converter::toCvMat(const g2o::Sim3 &Sim3)
 {
-    Eigen::Matrix3d eigR = Sim3.rotation().toRotationMatrix();
-    Eigen::Vector3d eigt = Sim3.translation();
-    double s = Sim3.scale();
+    Eigen::Matrix3d eigR = Sim3.rotation().toRotationMatrix().cast<double>();
+    Eigen::Vector3d eigt = Sim3.translation().cast<double>();
+    double s = static_cast<double>(Sim3.scale());
     return toCvSE3(s*eigR,eigt);
 }
 
@@ -307,7 +307,7 @@ Sophus::SE3<float> Converter::toSophus(const cv::Mat &T) {
 }
 
 Sophus::Sim3f Converter::toSophus(const g2o::Sim3& S) {
-    return Sophus::Sim3f(Sophus::RxSO3d((float)S.scale(), S.rotation().matrix()).cast<float>() ,
+    return Sophus::Sim3f(Sophus::RxSO3d(static_cast<double>(S.scale()), S.rotation().matrix().cast<double>()).cast<float>() ,
                          S.translation().cast<float>());
 }
 

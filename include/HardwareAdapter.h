@@ -24,6 +24,10 @@ extern std::atomic<bool> g_has_pending_json;
 // 异步写入 pending JSON（在 LBA 完成后调用）
 void FlushPendingJson();
 
+// Wait until every queued JSON export is durable. Required before headless
+// callers use _exit(), which bypasses static destructors.
+void DrainAsyncJsonWrites();
+
 namespace ORB_SLAM3 {
 
 /**
@@ -44,6 +48,7 @@ public:
         Map* map = nullptr;
         bool inertial = false;
         bool large = false;       // Native LocalInertialBA bLarge; disables divergence early-return.
+        bool rec_init = false;    // Native LocalInertialBA bRecInit; uses all-IMU Huber parity.
         bool pose_only = false;   // true: 仅位姿图（Sim3/SE3），不含路标
         bool fix_scale = true;    // 对应 Sim3 固定尺度时置 true；单目回环可置 false 近似转 SE3
         struct PoseEdge {
@@ -82,4 +87,3 @@ private:
 }  // namespace ORB_SLAM3
 
 #endif  // ORB_SLAM3_HARDWAREADAPTER_H
-

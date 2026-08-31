@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -51,19 +52,19 @@ void Solver::resizeVector(size_t sx)
   if (_maxXSize < sx) {
     _maxXSize = 2*sx;
     delete[] _x;
-    _x = new double[_maxXSize];
+    _x = new number_t[_maxXSize];
 #ifndef NDEBUG
-    memset(_x, 0, _maxXSize * sizeof(double));
+    memset(_x, 0, _maxXSize * sizeof(number_t));
 #endif
     if (_b) { // backup the former b, might still be needed for online processing
-      memcpy(_x, _b, oldSize * sizeof(double));
+      memcpy(_x, _b, oldSize * sizeof(number_t));
       delete[] _b;
-      _b = new double[_maxXSize];
+      _b = new number_t[_maxXSize];
       std::swap(_b, _x);
     } else {
-      _b = new double[_maxXSize];
+      _b = new number_t[_maxXSize];
 #ifndef NDEBUG
-      memset(_b, 0, _maxXSize * sizeof(double));
+      memset(_b, 0, _maxXSize * sizeof(number_t));
 #endif
     }
   }

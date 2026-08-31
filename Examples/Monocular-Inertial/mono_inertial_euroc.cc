@@ -27,6 +27,7 @@
 #include<opencv2/core/core.hpp>
 
 #include<System.h>
+#include "HardwareAdapter.h"
 #include "ImuTypes.h"
 
 using namespace std;
@@ -219,7 +220,10 @@ int main(int argc, char *argv[])
             static const char* env_serial = std::getenv("SLAM_SERIAL_LBA");
             static bool serial_mode = (env_serial && std::string(env_serial) == "1");
             if (serial_mode) {
-                while (!SLAM.GetLocalMapper()->AcceptKeyFrames()) {
+                ORB_SLAM3::LocalMapping* local_mapper = SLAM.GetLocalMapper();
+                while (local_mapper &&
+                       (local_mapper->KeyframesInQueue() > 0 ||
+                        !local_mapper->AcceptKeyFrames())) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
             }
@@ -265,8 +269,43 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A queued keyframe can briefly coexist with AcceptKeyFrames()==true.  For
+    // offline exports, wait until Local Mapping is both idle and queue-empty so
+    // Shutdown() cannot discard the final LBA calls.
+    const char* env_drain_local_mapping = std::getenv("SLAM_DRAIN_LOCAL_MAPPING");
+    const bool drain_local_mapping = env_drain_local_mapping &&
+        (std::string(env_drain_local_mapping) == "1" ||
+         std::string(env_drain_local_mapping) == "true");
+    if (drain_local_mapping)
+    {
+        ORB_SLAM3::LocalMapping* local_mapper = SLAM.GetLocalMapper();
+        auto last_report = std::chrono::steady_clock::now();
+        cout << "[LOCAL_MAPPING_DRAIN] waiting for queued keyframes" << endl;
+        while (local_mapper &&
+               (local_mapper->KeyframesInQueue() > 0 || !local_mapper->AcceptKeyFrames()))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_report >= std::chrono::seconds(5))
+            {
+                cout << "[LOCAL_MAPPING_DRAIN] queue=" << local_mapper->KeyframesInQueue()
+                     << " accept=" << local_mapper->AcceptKeyFrames() << endl;
+                last_report = now;
+            }
+        }
+        cout << "[LOCAL_MAPPING_DRAIN] complete" << endl;
+    }
+
     // Stop all threads
     SLAM.Shutdown();
+
+    const char* env_dump_json = std::getenv("DUMP_JSON");
+    if (env_dump_json &&
+        (std::string(env_dump_json) == "1" || std::string(env_dump_json) == "true"))
+    {
+        DrainAsyncJsonWrites();
+        cout << "[ASYNC_JSON_DRAIN] complete" << endl;
+    }
 
     // Save camera trajectory (must be BEFORE headless force exit)
     if (bFileName)

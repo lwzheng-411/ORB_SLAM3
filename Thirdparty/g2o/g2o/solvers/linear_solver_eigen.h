@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -51,8 +52,8 @@ template <typename MatrixType>
 class LinearSolverEigen: public LinearSolver<MatrixType>
 {
   public:
-    typedef Eigen::SparseMatrix<double, Eigen::ColMajor> SparseMatrix;
-    typedef Eigen::Triplet<double> Triplet;
+    typedef Eigen::SparseMatrix<number_t, Eigen::ColMajor> SparseMatrix;
+    typedef Eigen::Triplet<number_t> Triplet;
     typedef Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> PermutationMatrix;
     /**
      * \brief Sub-classing Eigen's SimplicialLDLT to perform ordering with a given ordering
@@ -91,7 +92,7 @@ class LinearSolverEigen: public LinearSolver<MatrixType>
       return true;
     }
 
-    bool solve(const SparseBlockMatrix<MatrixType>& A, double* x, double* b)
+    bool solve(const SparseBlockMatrix<MatrixType>& A, number_t* x, number_t* b)
     {
       if (_init)
         _sparseMatrix.resize(A.rows(), A.cols());
@@ -100,7 +101,7 @@ class LinearSolverEigen: public LinearSolver<MatrixType>
         computeSymbolicDecomposition(A);
       _init = false;
 
-      double t=get_monotonic_time();
+      number_t t=get_monotonic_time();
       _cholesky.factorize(_sparseMatrix);
       if (_cholesky.info() != Eigen::Success) { // the matrix is not positive definite
         if (_writeDebug) {
@@ -146,7 +147,7 @@ class LinearSolverEigen: public LinearSolver<MatrixType>
      */
     void computeSymbolicDecomposition(const SparseBlockMatrix<MatrixType>& A)
     {
-      double t=get_monotonic_time();
+      number_t t=get_monotonic_time();
       if (! _blockOrdering) {
         _cholesky.analyzePattern(_sparseMatrix);
       } else {

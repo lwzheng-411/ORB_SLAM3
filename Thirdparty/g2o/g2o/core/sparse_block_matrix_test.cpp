@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -31,7 +32,7 @@ using namespace std;
 using namespace g2o;
 using namespace Eigen;
 
-typedef SparseBlockMatrix< MatrixXd >
+typedef SparseBlockMatrix< MatrixX >
 SparseBlockMatrixX;
 
 std::ostream& operator << (std::ostream& os, const SparseBlockMatrixX::SparseMatrixBlock& m) {

@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, H. Strasdat, W. Burgard
 // All rights reserved.
@@ -45,8 +46,8 @@ namespace g2o {
 
       static const int Dimension = D;
       typedef E Measurement;
-      typedef Matrix<double, D, 1> ErrorVector;
-      typedef Matrix<double, D, D> InformationType;
+      typedef Matrix<number_t, D, 1> ErrorVector;
+      typedef Matrix<number_t, D, D> InformationType;
 
       BaseEdge() : OptimizableGraph::Edge()
       {
@@ -55,13 +56,13 @@ namespace g2o {
 
       virtual ~BaseEdge() {}
 
-      virtual double chi2() const 
+      virtual number_t chi2() const 
       {
         return _error.dot(information()*_error);
       }
 
-      virtual const double* errorData() const { return _error.data();}
-      virtual double* errorData() { return _error.data();}
+      virtual const number_t* errorData() const { return _error.data();}
+      virtual number_t* errorData() { return _error.data();}
       const ErrorVector& error() const { return _error;}
       ErrorVector& error() { return _error;}
 
@@ -70,8 +71,8 @@ namespace g2o {
       InformationType& information() { return _information;}
       void setInformation(const InformationType& information) { _information = information;}
 
-      virtual const double* informationData() const { return _information.data();}
-      virtual double* informationData() { return _information.data();}
+      virtual const number_t* informationData() const { return _information.data();}
+      virtual number_t* informationData() { return _information.data();}
 
       //! accessor functions for the measurement represented by the edge
       const Measurement& measurement() const { return _measurement;}
@@ -93,7 +94,7 @@ namespace g2o {
       /**
        * calculate the robust information matrix by updating the information matrix of the error
        */
-      InformationType robustInformation(const Eigen::Vector3d& rho)
+      InformationType robustInformation(const Vector3& rho)
       {
         InformationType result = rho[1] * _information;
         //ErrorVector weightedErrror = _information * _error;

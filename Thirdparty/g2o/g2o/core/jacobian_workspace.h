@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -50,7 +51,7 @@ namespace g2o {
   class  JacobianWorkspace
   {
     public:
-      typedef std::vector<Eigen::VectorXd, Eigen::aligned_allocator<Eigen::VectorXd> >      WorkspaceVector;
+      typedef std::vector<VectorX, Eigen::aligned_allocator<VectorX> >      WorkspaceVector;
 
     public:
       JacobianWorkspace();
@@ -79,7 +80,7 @@ namespace g2o {
       /**
        * return the workspace for a vertex in an edge
        */
-      double* workspaceForVertex(int vertexIndex)
+      number_t* workspaceForVertex(int vertexIndex)
       {
         assert(vertexIndex >= 0 && (size_t)vertexIndex < _workspace.size() && "Index out of bounds");
         return _workspace[vertexIndex].data();

@@ -1,3 +1,4 @@
+#include "../core/scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 H. Strasdat
 // All rights reserved.
@@ -57,9 +58,9 @@ namespace g2o {
       _estimate = Sim3();
     }
 
-    virtual void oplusImpl(const double* update_)
+    virtual void oplusImpl(const number_t* update_)
     {
-      Eigen::Map<Vector7d> update(const_cast<double*>(update_));
+      Eigen::Map<Vector7d> update(const_cast<number_t*>(update_));
 
       if (_fix_scale)
         update[6] = 0;
@@ -68,20 +69,20 @@ namespace g2o {
       setEstimate(s*estimate());
     }
 
-    Vector2d _principle_point1, _principle_point2;
-    Vector2d _focal_length1, _focal_length2;
+    Vector2 _principle_point1, _principle_point2;
+    Vector2 _focal_length1, _focal_length2;
 
-    Vector2d cam_map1(const Vector2d & v) const
+    Vector2 cam_map1(const Vector2 & v) const
     {
-      Vector2d res;
+      Vector2 res;
       res[0] = v[0]*_focal_length1[0] + _principle_point1[0];
       res[1] = v[1]*_focal_length1[1] + _principle_point1[1];
       return res;
     }
 
-    Vector2d cam_map2(const Vector2d & v) const
+    Vector2 cam_map2(const Vector2 & v) const
     {
-      Vector2d res;
+      Vector2 res;
       res[0] = v[0]*_focal_length2[0] + _principle_point2[0];
       res[1] = v[1]*_focal_length2[1] + _principle_point2[1];
       return res;
@@ -113,7 +114,7 @@ namespace g2o {
       _error = error_.log();
     }
 
-    virtual double initialEstimatePossible(const OptimizableGraph::VertexSet& , OptimizableGraph::Vertex* ) { return 1.;}
+    virtual number_t initialEstimatePossible(const OptimizableGraph::VertexSet& , OptimizableGraph::Vertex* ) { return 1.;}
     virtual void initialEstimate(const OptimizableGraph::VertexSet& from, OptimizableGraph::Vertex* /*to*/)
     {
       VertexSim3Expmap* v1 = static_cast<VertexSim3Expmap*>(_vertices[0]);
@@ -127,7 +128,7 @@ namespace g2o {
 
 
 /**/
-class EdgeSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2d,  VertexSBAPointXYZ, VertexSim3Expmap>
+class EdgeSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2,  VertexSBAPointXYZ, VertexSim3Expmap>
 {
   public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -140,7 +141,7 @@ class EdgeSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2d,  VertexSBAPointXY
       const VertexSim3Expmap* v1 = static_cast<const VertexSim3Expmap*>(_vertices[1]);
       const VertexSBAPointXYZ* v2 = static_cast<const VertexSBAPointXYZ*>(_vertices[0]);
 
-      Vector2d obs(_measurement);
+      Vector2 obs(_measurement);
       _error = obs-v1->cam_map1(project(v1->estimate().map(v2->estimate())));
     }
 
@@ -149,7 +150,7 @@ class EdgeSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2d,  VertexSBAPointXY
 };
 
 /**/
-class EdgeInverseSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2d,  VertexSBAPointXYZ, VertexSim3Expmap>
+class EdgeInverseSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2,  VertexSBAPointXYZ, VertexSim3Expmap>
 {
   public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -162,7 +163,7 @@ class EdgeInverseSim3ProjectXYZ : public  BaseBinaryEdge<2, Vector2d,  VertexSBA
       const VertexSim3Expmap* v1 = static_cast<const VertexSim3Expmap*>(_vertices[1]);
       const VertexSBAPointXYZ* v2 = static_cast<const VertexSBAPointXYZ*>(_vertices[0]);
 
-      Vector2d obs(_measurement);
+      Vector2 obs(_measurement);
       _error = obs-v1->cam_map2(project(v1->estimate().inverse().map(v2->estimate())));
     }
 

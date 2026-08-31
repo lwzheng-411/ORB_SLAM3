@@ -1,3 +1,4 @@
+#include "scalar.h"
 // g2o - General Graph Optimization
 // Copyright (C) 2011 R. Kuemmerle, G. Grisetti, W. Burgard
 // All rights reserved.
@@ -45,11 +46,11 @@ namespace g2o {
   {
     static const int PoseDim = _PoseDim;
     static const int LandmarkDim = _LandmarkDim;
-    typedef Matrix<double, PoseDim, PoseDim> PoseMatrixType;
-    typedef Matrix<double, LandmarkDim, LandmarkDim> LandmarkMatrixType;
-    typedef Matrix<double, PoseDim, LandmarkDim> PoseLandmarkMatrixType;
-    typedef Matrix<double, PoseDim, 1> PoseVectorType;
-    typedef Matrix<double, LandmarkDim, 1> LandmarkVectorType;
+    typedef Matrix<number_t, PoseDim, PoseDim> PoseMatrixType;
+    typedef Matrix<number_t, LandmarkDim, LandmarkDim> LandmarkMatrixType;
+    typedef Matrix<number_t, PoseDim, LandmarkDim> PoseLandmarkMatrixType;
+    typedef Matrix<number_t, PoseDim, 1> PoseVectorType;
+    typedef Matrix<number_t, LandmarkDim, 1> LandmarkVectorType;
 
     typedef SparseBlockMatrix<PoseMatrixType> PoseHessianType;
     typedef SparseBlockMatrix<LandmarkMatrixType> LandmarkHessianType;
@@ -65,11 +66,11 @@ namespace g2o {
   {
     static const int PoseDim = Eigen::Dynamic;
     static const int LandmarkDim = Eigen::Dynamic;
-    typedef MatrixXd PoseMatrixType;
-    typedef MatrixXd LandmarkMatrixType;
-    typedef MatrixXd PoseLandmarkMatrixType;
-    typedef VectorXd PoseVectorType;
-    typedef VectorXd LandmarkVectorType;
+    typedef MatrixX PoseMatrixType;
+    typedef MatrixX LandmarkMatrixType;
+    typedef MatrixX PoseLandmarkMatrixType;
+    typedef VectorX PoseVectorType;
+    typedef VectorX LandmarkVectorType;
 
     typedef SparseBlockMatrix<PoseMatrixType> PoseHessianType;
     typedef SparseBlockMatrix<LandmarkMatrixType> LandmarkHessianType;
@@ -87,7 +88,7 @@ namespace g2o {
       /**
        * compute dest = H * src
        */
-      virtual void multiplyHessian(double* dest, const double* src) const = 0;
+      virtual void multiplyHessian(number_t* dest, const number_t* src) const = 0;
   };
 
   /**
@@ -125,8 +126,8 @@ namespace g2o {
       virtual bool updateStructure(const std::vector<HyperGraph::Vertex*>& vset, const HyperGraph::EdgeSet& edges);
       virtual bool buildSystem();
       virtual bool solve();
-      virtual bool computeMarginals(SparseBlockMatrix<MatrixXd>& spinv, const std::vector<std::pair<int, int> >& blockIndices);
-      virtual bool setLambda(double lambda, bool backup = false);
+      virtual bool computeMarginals(SparseBlockMatrix<MatrixX>& spinv, const std::vector<std::pair<int, int> >& blockIndices);
+      virtual bool setLambda(number_t lambda, bool backup = false);
       virtual void restoreDiagonal();
       virtual bool supportsSchur() {return true;}
       virtual bool schur() { return _doSchur;}
@@ -139,7 +140,7 @@ namespace g2o {
 
       virtual bool saveHessian(const std::string& fileName) const;
 
-      virtual void multiplyHessian(double* dest, const double* src) const { _Hpp->multiplySymmetricUpperTriangle(dest, src);}
+      virtual void multiplyHessian(number_t* dest, const number_t* src) const { _Hpp->multiplySymmetricUpperTriangle(dest, src);}
 
     protected:
       void resize(int* blockPoseIndices, int numPoseBlocks, 
@@ -168,8 +169,8 @@ namespace g2o {
 
       bool _doSchur;
 
-      double* _coefficients;
-      double* _bschur;
+      number_t* _coefficients;
+      number_t* _bschur;
 
       int _numPoses, _numLandmarks;
       int _sizePoses, _sizeLandmarks;
